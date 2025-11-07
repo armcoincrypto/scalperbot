@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/Users/gev/baysellbot/scalperbot/main.py", line 4, in <module>
+    from config import config
+  File "/Users/gev/baysellbot/scalperbot/config.py", line 50, in <module>
+    config = Config()
+  File "/Users/gev/baysellbot/scalperbot/config.py", line 21, in __init__
+    self.risk_pct = float(os.getenv('RISK_PCT', 0.008))
+ValueError: could not convert string to float: '0.008 DAILY_LOSS_PCT=0.03 WEEKLY_DD_PCT=0.08 MAX_CONCURRENT=4'
