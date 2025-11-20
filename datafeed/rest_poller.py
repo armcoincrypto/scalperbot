@@ -7,9 +7,9 @@ import asyncio
 import time
 from typing import List
 import logging
-from scalperbot.exchanges.adapter import MEXCAdapter
-from scalperbot.datafeed.candle_store import CandleStore
-from scalperbot.datafeed.orderbook import OrderBook
+from exchanges.adapter import MEXCAdapter
+from datafeed.candle_store import CandleStore
+from datafeed.orderbook import OrderBook
 
 logger = logging.getLogger(__name__)
 

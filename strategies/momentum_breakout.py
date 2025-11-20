@@ -13,8 +13,8 @@ import pandas as pd
 import numpy as np
 from typing import Optional, Dict, Any
 import logging
-from scalperbot.datafeed.candle_store import CandleStore
-from scalperbot.config import settings
+from datafeed.candle_store import CandleStore
+from config import settings
 
 logger = logging.getLogger(__name__)
 

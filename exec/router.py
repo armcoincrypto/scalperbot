@@ -5,8 +5,8 @@ Handles order placement with proper quantization and validation
 import logging
 from typing import Optional, Dict, Any
 from decimal import Decimal, ROUND_DOWN
-from scalperbot.exchanges.adapter import MEXCAdapter
-from scalperbot.datafeed.orderbook import OrderBook
+from exchanges.adapter import MEXCAdapter
+from datafeed.orderbook import OrderBook
 
 logger = logging.getLogger(__name__)
 

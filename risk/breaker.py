@@ -4,8 +4,8 @@ Stops trading if daily loss exceeds threshold (e.g., -3%)
 """
 import logging
 from datetime import datetime
-from scalperbot.db import TradeDB
-from scalperbot.config import settings
+from db import TradeDB
+from config import settings
 
 logger = logging.getLogger(__name__)
 

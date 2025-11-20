@@ -27,9 +27,9 @@ class MEXCAdapter:
             }
         })
 
+        # MEXC doesn't support sandbox mode, so we just log the mode
         if dry_run:
-            self.exchange.set_sandbox_mode(True)
-            logger.info("🔶 MEXC Adapter initialized in DRY_RUN mode")
+            logger.info("🔶 MEXC Adapter initialized in DRY_RUN mode (simulated orders)")
         else:
             logger.info("🟢 MEXC Adapter initialized in LIVE mode")
 
@@ -56,10 +56,7 @@ class MEXCAdapter:
         limit: int = 100,
         since: Optional[int] = None
     ) -> List[List]:
-        """
-        Fetch OHLCV candle data
-        Returns: List of [timestamp, open, high, low, close, volume]
-        """
+        """Fetch OHLCV candle data"""
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
             return ohlcv
@@ -97,10 +94,7 @@ class MEXCAdapter:
         amount: float,
         params: Optional[Dict] = None
     ) -> Dict[str, Any]:
-        """
-        Create a market order
-        side: 'buy' or 'sell'
-        """
+        """Create a market order"""
         if self.dry_run:
             logger.info(f"[DRY_RUN] Would create market {side} order: {amount} {symbol}")
             return {
@@ -130,10 +124,7 @@ class MEXCAdapter:
         price: float,
         params: Optional[Dict] = None
     ) -> Dict[str, Any]:
-        """
-        Create a limit order
-        side: 'buy' or 'sell'
-        """
+        """Create a limit order"""
         if self.dry_run:
             logger.info(f"[DRY_RUN] Would create limit {side} order: {amount} {symbol} @ {price}")
             return {
@@ -179,7 +170,7 @@ class MEXCAdapter:
             return False
 
     def get_market_info(self, symbol: str) -> Dict[str, Any]:
-        """Get market information (min/max order size, tick size, etc.)"""
+        """Get market information"""
         try:
             markets = self.exchange.load_markets()
             market = markets.get(symbol, {})

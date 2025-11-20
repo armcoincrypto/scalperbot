@@ -4,7 +4,7 @@ Calculates position sizes based on available capital and risk parameters
 """
 import logging
 from typing import Optional, Dict, Any
-from scalperbot.config import settings
+from config import settings
 
 logger = logging.getLogger(__name__)
 
