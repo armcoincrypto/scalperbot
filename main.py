@@ -115,6 +115,10 @@ class ScalperBot:
                 for signal in signals:
                     await self.execute_signal(signal)
 
+                # Print dynamic squeeze policy status every 10 cycles (~10 minutes)
+                if cycle % 10 == 0:
+                    self.strategy.print_policy_status()
+
             except Exception as e:
                 logger.error(f"❌ Error in trading loop: {e}", exc_info=True)
 

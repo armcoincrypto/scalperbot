@@ -3,11 +3,17 @@ Momentum Breakout Strategy
 4-filter GREEN strategy for identifying breakout opportunities
 
 GREEN 1: Trend check - 5m price > price 2 bars ago
-GREEN 2: BB expansion - Bollinger Band width growing
+GREEN 2: BB squeeze + expansion - Tight squeeze (percentile) + expanding bands
 GREEN 3: Volume surge - Volume Z-score > threshold
 GREEN 4: Breakout - Price > 10-period high + buffer
 
 ALL 4 filters must pass to generate a BUY signal.
+
+GREEN 2 uses Dynamic Squeeze Policy:
+- Starts strict (bottom 30% squeeze + 20% expansion)
+- Relaxes after N minutes without signals
+- Pair-specific thresholds for different volatility classes
+- Dry-run monitoring with auto-revert on losses
 """
 import pandas as pd
 import numpy as np
@@ -15,6 +21,7 @@ from typing import Optional, Dict, Any
 import logging
 from datafeed.candle_store import CandleStore
 from config import settings
+from strategies.dynamic_squeeze_policy import DynamicSqueezePolicy
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +37,19 @@ class MomentumBreakoutStrategy:
         # Strategy parameters from config
         self.bb_period = settings.green2_bb_period
         self.bb_std = settings.green2_bb_std
+        self.bb_lookback_hours = settings.green2_lookback_hours
         self.volume_threshold = settings.green3_volume_threshold
         self.volume_enabled = settings.green3_enabled
         self.breakout_period = settings.green4_breakout_period
         self.breakout_buffer_bps = settings.green4_breakout_buffer_bps
+
+        # Initialize dynamic squeeze policy
+        self.squeeze_policy = DynamicSqueezePolicy(
+            no_signal_timeout_minutes=settings.squeeze_no_signal_timeout_minutes,
+            permissive_duration_minutes=settings.squeeze_permissive_duration_minutes,
+            dry_run_loss_breaker_pct=settings.squeeze_dry_run_loss_breaker_pct,
+            enable_dry_run_monitoring=settings.squeeze_enable_monitoring
+        )
 
     def calculate_bollinger_bands(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate Bollinger Bands"""
@@ -70,23 +86,63 @@ class MomentumBreakoutStrategy:
         msg = f"GREEN 1: Price={current_price:.4f}, 2bars_ago={price_2bars_ago:.4f}, trending={'UP ✅' if trend_up else 'DOWN ❌'}"
         return trend_up, msg
 
-    def check_green2_bb_expansion(self, df: pd.DataFrame) -> tuple[bool, str]:
+    def check_green2_bb_squeeze_expansion(self, df: pd.DataFrame, symbol: str) -> tuple[bool, str]:
         """
-        GREEN 2: Bollinger Band expansion
-        BB width must be increasing (volatility expanding)
+        GREEN 2: Bollinger Band squeeze + expansion (with dynamic thresholds)
+
+        Requirements (adaptive based on market conditions):
+        1. BB width must be in bottom X% of recent range (squeeze)
+        2. BB width must be expanding by Y% (volatility breakout)
+
+        Where X and Y adapt based on:
+        - Time since last signal (relax if no signals)
+        - Pair volatility class (SOL relaxes faster)
+        - Dry-run performance (revert if losses exceed threshold)
         """
         if len(df) < self.bb_period + 2:
             return False, "GREEN 2: Not enough data for BB calculation"
 
         df = self.calculate_bollinger_bands(df)
 
+        # Get dynamic thresholds for this symbol
+        percentile_threshold, expansion_threshold = self.squeeze_policy.get_squeeze_thresholds(symbol)
+
+        # Calculate lookback period (convert hours to 5m candles)
+        lookback_candles = (self.bb_lookback_hours * 60) // 5
+        lookback_candles = min(lookback_candles, len(df) - 1)
+
+        # Get BB width history
+        bb_width_history = df.tail(lookback_candles)['bb_width'].dropna()
+
+        if len(bb_width_history) < 10:
+            return False, "GREEN 2: Not enough BB width history"
+
         current_bb_width = df.iloc[-1]['bb_width']
         prev_bb_width = df.iloc[-2]['bb_width']
 
-        expanding = current_bb_width > prev_bb_width
+        # Check 1: Is BB width in bottom X% (squeeze)?
+        percentile_value = bb_width_history.quantile(percentile_threshold)
+        is_squeezed = current_bb_width <= percentile_value
 
-        msg = f"GREEN 2: BB_width={current_bb_width:.6f}, prev={prev_bb_width:.6f}, expanding={expanding}"
-        return expanding, msg
+        # Check 2: Is BB width expanding by Y%?
+        expansion_pct = (current_bb_width - prev_bb_width) / prev_bb_width
+        is_expanding = expansion_pct >= expansion_threshold
+
+        # Both conditions must be true
+        passed = is_squeezed and is_expanding
+
+        # Get current policy mode for logging
+        mode = self.squeeze_policy.pair_states.get(symbol)
+        mode_name = mode.current_mode.name.upper() if mode else "UNKNOWN"
+
+        msg = (
+            f"GREEN 2 [{mode_name}]: "
+            f"Squeeze: {is_squeezed} (width={current_bb_width:.6f}, {percentile_threshold*100:.0f}%ile={percentile_value:.6f}), "
+            f"Expanding: {is_expanding} (rate={expansion_pct*100:.1f}%, need={expansion_threshold*100:.0f}%) "
+            f"→ {'✅ PASS' if passed else '❌ FAIL'}"
+        )
+
+        return passed, msg
 
     def check_green3_volume_surge(self, df: pd.DataFrame) -> tuple[bool, str]:
         """
@@ -150,7 +206,7 @@ class MomentumBreakoutStrategy:
 
         # Run all 4 GREEN filters
         green1_pass, green1_msg = self.check_green1_trend(df)
-        green2_pass, green2_msg = self.check_green2_bb_expansion(df)
+        green2_pass, green2_msg = self.check_green2_bb_squeeze_expansion(df, symbol)
         green3_pass, green3_msg = self.check_green3_volume_surge(df)
         green4_pass, green4_msg = self.check_green4_breakout(df)
 
@@ -181,6 +237,11 @@ class MomentumBreakoutStrategy:
             }
             logger.info(f"🟢 SIGNAL GENERATED: {symbol} BUY @ {signal['price']:.4f}")
             logger.info(f"{'='*60}\n")
+
+            # Record signal with squeeze policy (for adaptive behavior)
+            # In production, would pass actual PnL after trade closes
+            self.squeeze_policy.record_signal(symbol, simulated_pnl=None)
+
             return signal
         else:
             logger.info(f"❌ No signal - filters not all passed")
@@ -208,3 +269,11 @@ class MomentumBreakoutStrategy:
             logger.debug(f"No signals generated this cycle")
 
         return signals
+
+    def print_policy_status(self):
+        """Print the current status of the dynamic squeeze policy"""
+        self.squeeze_policy.print_status()
+
+    def get_policy_report(self) -> Dict:
+        """Get policy status report (for monitoring/logging)"""
+        return self.squeeze_policy.get_status_report()
