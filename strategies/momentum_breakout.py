@@ -22,6 +22,7 @@ import logging
 from datafeed.candle_store import CandleStore
 from config import settings
 from strategies.dynamic_squeeze_policy import DynamicSqueezePolicy
+from strategies.correlation_detector import CorrelationDetector
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,9 @@ class MomentumBreakoutStrategy:
             dry_run_loss_breaker_pct=settings.squeeze_dry_run_loss_breaker_pct,
             enable_dry_run_monitoring=settings.squeeze_enable_monitoring
         )
+
+        # Initialize correlation detector (detects multi-asset signals)
+        self.correlation_detector = CorrelationDetector(window_seconds=60)
 
     def calculate_bollinger_bands(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate Bollinger Bands"""
@@ -222,10 +226,26 @@ class MomentumBreakoutStrategy:
         all_pass = green1_pass and green2_pass and green3_pass and green4_pass
 
         if all_pass:
+            current_price = df.iloc[-1]['close']
+
+            # Get current policy mode for correlation tracking
+            mode = self.squeeze_policy.pair_states.get(symbol)
+            mode_name = mode.current_mode.name.upper() if mode else "UNKNOWN"
+
+            # Check for multi-asset correlation
+            is_correlated, pair_count, correlated_symbols = self.correlation_detector.add_signal(
+                symbol=symbol,
+                price=current_price,
+                mode=mode_name
+            )
+
+            # Get suggested size multiplier
+            size_multiplier = self.correlation_detector.get_size_multiplier(pair_count)
+
             signal = {
                 'symbol': symbol,
                 'action': 'BUY',
-                'price': df.iloc[-1]['close'],
+                'price': current_price,
                 'timestamp': df.iloc[-1]['timestamp'],
                 'reason': 'GREEN 1-4 all passed',
                 'filters': {
@@ -233,9 +253,24 @@ class MomentumBreakoutStrategy:
                     'green2': green2_msg,
                     'green3': green3_msg,
                     'green4': green4_msg
+                },
+                'correlation': {
+                    'is_correlated': is_correlated,
+                    'pair_count': pair_count,
+                    'correlated_symbols': correlated_symbols,
+                    'size_multiplier': size_multiplier
                 }
             }
+
             logger.info(f"🟢 SIGNAL GENERATED: {symbol} BUY @ {signal['price']:.4f}")
+
+            # Log correlation info
+            if is_correlated:
+                logger.warning(f"🔗 CORRELATION: {pair_count} pairs signaled together: {', '.join(correlated_symbols)}")
+                logger.warning(f"💰 Suggested size multiplier: {size_multiplier}x (higher conviction)")
+            else:
+                logger.info(f"📊 Single signal (no correlation) - size multiplier: {size_multiplier}x")
+
             logger.info(f"{'='*60}\n")
 
             # Record signal with squeeze policy (for adaptive behavior)
