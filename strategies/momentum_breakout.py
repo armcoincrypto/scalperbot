@@ -23,6 +23,7 @@ from datafeed.candle_store import CandleStore
 from config import settings
 from strategies.dynamic_squeeze_policy import DynamicSqueezePolicy
 from strategies.correlation_detector import CorrelationDetector
+from notifications.telegram_notifier import TelegramNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,9 @@ class MomentumBreakoutStrategy:
 
         # Initialize correlation detector (detects multi-asset signals)
         self.correlation_detector = CorrelationDetector(window_seconds=60)
+
+        # Initialize Telegram notifier (sends alerts to mobile)
+        self.telegram = TelegramNotifier()
 
     def calculate_bollinger_bands(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate Bollinger Bands"""
@@ -272,6 +276,12 @@ class MomentumBreakoutStrategy:
                 logger.info(f"📊 Single signal (no correlation) - size multiplier: {size_multiplier}x")
 
             logger.info(f"{'='*60}\n")
+
+            # Send Telegram notification
+            try:
+                self.telegram.send_signal(signal)
+            except Exception as e:
+                logger.error(f"Failed to send Telegram notification: {e}")
 
             # Record signal with squeeze policy (for adaptive behavior)
             # In production, would pass actual PnL after trade closes
