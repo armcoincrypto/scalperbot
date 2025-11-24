@@ -115,27 +115,26 @@ class TelegramNotifier:
     def send_signal(self, signal: Dict[str, Any]):
         """
         Send a trading signal notification
-        Non-blocking - runs in background
+        Blocking - waits for message to be sent
         """
         if not self.enabled:
             return
 
         message = self._format_signal_message(signal)
 
-        # Run async in background without blocking
+        # Run async with proper completion
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
+            # If we're already in an event loop, schedule the task
+            asyncio.ensure_future(self._send_async(message))
         except RuntimeError:
-            # No event loop in current thread, create new one
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        loop.create_task(self._send_async(message))
+            # No event loop running, use asyncio.run (blocking)
+            asyncio.run(self._send_async(message))
 
     def send_error(self, error: str, context: Optional[str] = None):
         """
         Send an error alert
-        Non-blocking - runs in background
+        Blocking - waits for message to be sent
         """
         if not self.enabled:
             return
@@ -143,17 +142,15 @@ class TelegramNotifier:
         message = self._format_error_message(error, context)
 
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
+            asyncio.ensure_future(self._send_async(message))
         except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        loop.create_task(self._send_async(message))
+            asyncio.run(self._send_async(message))
 
     def send_info(self, title: str, details: str):
         """
         Send an info message
-        Non-blocking - runs in background
+        Blocking - waits for message to be sent
         """
         if not self.enabled:
             return
@@ -161,17 +158,15 @@ class TelegramNotifier:
         message = self._format_info_message(title, details)
 
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
+            asyncio.ensure_future(self._send_async(message))
         except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        loop.create_task(self._send_async(message))
+            asyncio.run(self._send_async(message))
 
     def send_daily_summary(self, summary: Dict[str, Any]):
         """
         Send a daily trading summary
-        Non-blocking - runs in background
+        Blocking - waits for message to be sent
         """
         if not self.enabled:
             return
@@ -184,9 +179,7 @@ class TelegramNotifier:
         msg += f"\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
+            asyncio.ensure_future(self._send_async(msg))
         except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        loop.create_task(self._send_async(msg))
+            asyncio.run(self._send_async(msg))
