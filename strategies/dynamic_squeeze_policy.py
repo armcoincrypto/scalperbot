@@ -82,6 +82,36 @@ class DynamicSqueezePolicy:
         description="Bottom 70% squeeze + 10% expansion"
     )
 
+    # RELAXED MODES (Temporary - controlled experiment)
+    # Lower expansion requirements for faster signal generation
+    RELAXED_SOL = SqueezeMode(
+        name="relaxed_sol",
+        percentile_threshold=0.70,
+        expansion_threshold=0.10,  # 10% expansion (SOL is volatile)
+        description="SOL relaxed: 70% squeeze + 10% expansion"
+    )
+
+    RELAXED_XRP = SqueezeMode(
+        name="relaxed_xrp",
+        percentile_threshold=0.70,
+        expansion_threshold=0.08,  # 8% expansion (XRP smaller moves)
+        description="XRP relaxed: 70% squeeze + 8% expansion"
+    )
+
+    RELAXED_BTC = SqueezeMode(
+        name="relaxed_btc",
+        percentile_threshold=0.70,
+        expansion_threshold=0.12,  # 12% expansion (BTC moderate)
+        description="BTC relaxed: 70% squeeze + 12% expansion"
+    )
+
+    RELAXED_ETH = SqueezeMode(
+        name="relaxed_eth",
+        percentile_threshold=0.70,
+        expansion_threshold=0.12,  # 12% expansion (ETH moderate)
+        description="ETH relaxed: 70% squeeze + 12% expansion"
+    )
+
     # Pair volatility classifications
     PAIR_VOLATILITY = {
         'SOL/USDT': 'high',
@@ -90,12 +120,22 @@ class DynamicSqueezePolicy:
         'XRP/USDT': 'medium',
     }
 
+    # Pair-specific relaxed modes (for controlled experiment)
+    PAIR_RELAXED_MODES = {
+        'SOL/USDT': RELAXED_SOL,
+        'XRP/USDT': RELAXED_XRP,
+        'BTC/USDT': RELAXED_BTC,
+        'ETH/USDT': RELAXED_ETH,
+    }
+
     def __init__(
         self,
         no_signal_timeout_minutes: int = 30,
         permissive_duration_minutes: int = 15,
         dry_run_loss_breaker_pct: float = 2.0,
-        enable_dry_run_monitoring: bool = True
+        enable_dry_run_monitoring: bool = True,
+        enable_relaxed_session: bool = False,
+        relaxed_session_hours: int = 48
     ):
         """
         Initialize dynamic squeeze policy
@@ -105,11 +145,19 @@ class DynamicSqueezePolicy:
             permissive_duration_minutes: Stay permissive for this long before reverting
             dry_run_loss_breaker_pct: Auto-revert if simulated losses exceed this %
             enable_dry_run_monitoring: Enable safety monitoring (set False to disable)
+            enable_relaxed_session: Enable temporary relaxed thresholds (controlled experiment)
+            relaxed_session_hours: Duration of relaxed session before auto-revert (default 48h)
         """
         self.no_signal_timeout = no_signal_timeout_minutes * 60  # Convert to seconds
         self.permissive_duration = permissive_duration_minutes * 60
         self.loss_breaker_pct = dry_run_loss_breaker_pct
         self.monitoring_enabled = enable_dry_run_monitoring
+
+        # Relaxed session control (time-boxed experiment)
+        self.relaxed_session_enabled = enable_relaxed_session
+        self.relaxed_session_duration = relaxed_session_hours * 3600  # Convert to seconds
+        self.relaxed_session_start = time.time() if enable_relaxed_session else None
+        self.relaxed_session_end = (time.time() + self.relaxed_session_duration) if enable_relaxed_session else None
 
         # Initialize per-pair policies
         self.pair_policies: Dict[str, PairPolicy] = {}
@@ -126,6 +174,12 @@ class DynamicSqueezePolicy:
         logger.info(f"  Permissive duration: {permissive_duration_minutes}m")
         logger.info(f"  Loss breaker: {dry_run_loss_breaker_pct}%")
         logger.info(f"  Monitoring: {'ENABLED' if enable_dry_run_monitoring else 'DISABLED'}")
+
+        if enable_relaxed_session:
+            logger.warning("🧪 RELAXED SESSION ACTIVE (Controlled Experiment)")
+            logger.warning(f"   Duration: {relaxed_session_hours} hours")
+            logger.warning(f"   Auto-revert at: {datetime.fromtimestamp(self.relaxed_session_end).strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.warning(f"   Pair-specific thresholds: SOL=10%, XRP=8%, BTC/ETH=12%")
 
     def register_pair(self, symbol: str):
         """Register a trading pair with the policy manager"""
@@ -175,7 +229,22 @@ class DynamicSqueezePolicy:
 
         current_time = time.time()
 
-        # Check if we should relax the policy
+        # ===== RELAXED SESSION OVERRIDE (Time-boxed experiment) =====
+        if self.relaxed_session_enabled and self.relaxed_session_end:
+            if current_time < self.relaxed_session_end:
+                # Use pair-specific relaxed mode
+                relaxed_mode = self.PAIR_RELAXED_MODES.get(symbol, self.PERMISSIVE_MODE)
+                return (relaxed_mode.percentile_threshold, relaxed_mode.expansion_threshold)
+            else:
+                # Relaxed session expired - disable permanently
+                if self.relaxed_session_enabled:  # First time expiring
+                    logger.warning("⏰ RELAXED SESSION EXPIRED - Reverting to normal behavior")
+                    logger.warning("   All pairs now using standard STRICT/MODERATE/PERMISSIVE logic")
+                self.relaxed_session_enabled = False
+                self.relaxed_session_end = None
+                # Continue to normal logic below
+
+        # Check if we should relax the policy (normal adaptive behavior)
         should_relax = False
 
         if state.last_signal_time is None:

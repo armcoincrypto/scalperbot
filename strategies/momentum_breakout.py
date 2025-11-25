@@ -50,7 +50,9 @@ class MomentumBreakoutStrategy:
             no_signal_timeout_minutes=settings.squeeze_no_signal_timeout_minutes,
             permissive_duration_minutes=settings.squeeze_permissive_duration_minutes,
             dry_run_loss_breaker_pct=settings.squeeze_dry_run_loss_breaker_pct,
-            enable_dry_run_monitoring=settings.squeeze_enable_monitoring
+            enable_dry_run_monitoring=settings.squeeze_enable_monitoring,
+            enable_relaxed_session=settings.squeeze_enable_relaxed_session,
+            relaxed_session_hours=settings.squeeze_relaxed_session_hours
         )
 
         # Initialize correlation detector (detects multi-asset signals)

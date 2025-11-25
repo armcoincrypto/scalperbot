@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     squeeze_dry_run_loss_breaker_pct: float = 2.0  # Auto-revert if losses exceed this %
     squeeze_enable_monitoring: bool = True  # Enable dry-run monitoring
 
+    # Relaxed Session (Controlled Experiment) - Time-boxed filter relaxation
+    squeeze_enable_relaxed_session: bool = False  # Enable temporary relaxed thresholds
+    squeeze_relaxed_session_hours: int = 48  # Auto-revert after N hours
+
     # Position sizing
     position_size_usd: float = 100.0  # Default position size
     max_positions: int = 3
