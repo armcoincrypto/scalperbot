@@ -234,6 +234,7 @@ class DynamicSqueezePolicy:
             if current_time < self.relaxed_session_end:
                 # Use pair-specific relaxed mode
                 relaxed_mode = self.PAIR_RELAXED_MODES.get(symbol, self.PERMISSIVE_MODE)
+                state.current_mode = relaxed_mode  # Update state for correct logging
                 return (relaxed_mode.percentile_threshold, relaxed_mode.expansion_threshold)
             else:
                 # Relaxed session expired - disable permanently
