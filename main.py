@@ -6,7 +6,7 @@ import asyncio
 import logging
 import signal
 import sys
-from datetime import datetime
+from datetime import datetime, UTC
 
 from config import settings
 from db import TradeDB
@@ -94,7 +94,7 @@ class ScalperBot:
         while self.running:
             cycle += 1
             logger.info(f"\n{'='*80}")
-            logger.info(f"🔄 Strategy Cycle #{cycle} - {datetime.utcnow().isoformat()}")
+            logger.info(f"🔄 Strategy Cycle #{cycle} - {datetime.now(UTC).isoformat()}")
             logger.info(f"{'='*80}")
 
             try:
