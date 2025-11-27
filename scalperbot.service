@@ -5,13 +5,13 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/scalperbot
-Environment="PATH=/root/scalperbot/.venv/bin"
-ExecStart=/root/scalperbot/.venv/bin/python -m scalperbot.main
+WorkingDirectory=/home/user/scalperbot
+Environment="PATH=/home/user/scalperbot/.venv/bin"
+ExecStart=/home/user/scalperbot/.venv/bin/python main.py
 Restart=always
 RestartSec=10
-StandardOutput=append:/root/scalperbot/bot.log
-StandardError=append:/root/scalperbot/bot.log
+StandardOutput=append:/home/user/scalperbot/bot.log
+StandardError=append:/home/user/scalperbot/bot.log
 
 # Security
 NoNewPrivileges=true
