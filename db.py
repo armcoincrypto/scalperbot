@@ -3,7 +3,7 @@ Database module for trade logging
 SQLite-based trade history storage
 """
 import sqlite3
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
@@ -69,7 +69,7 @@ class TradeDB:
             INSERT INTO trades (timestamp, symbol, side, price, quantity, notional, signal_reason, order_id, status)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            datetime.utcnow().isoformat(),
+            datetime.now(UTC).isoformat(),
             symbol,
             side,
             price,
@@ -107,7 +107,7 @@ class TradeDB:
     def get_daily_pnl(self, date: Optional[str] = None) -> float:
         """Get PnL for a specific date (default: today)"""
         if date is None:
-            date = datetime.utcnow().strftime("%Y-%m-%d")
+            date = datetime.now(UTC).strftime("%Y-%m-%d")
 
         cursor = self.conn.execute(
             "SELECT pnl FROM daily_pnl WHERE date = ?",
@@ -119,7 +119,7 @@ class TradeDB:
     def update_daily_pnl(self, pnl_delta: float, date: Optional[str] = None):
         """Update daily PnL"""
         if date is None:
-            date = datetime.utcnow().strftime("%Y-%m-%d")
+            date = datetime.now(UTC).strftime("%Y-%m-%d")
 
         self.conn.execute("""
             INSERT INTO daily_pnl (date, pnl, num_trades)

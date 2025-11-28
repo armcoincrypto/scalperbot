@@ -3,7 +3,7 @@ Risk Breaker - Daily Loss Limit
 Stops trading if daily loss exceeds threshold (e.g., -3%)
 """
 import logging
-from datetime import datetime
+from datetime import datetime, UTC
 from db import TradeDB
 from config import settings
 
@@ -37,7 +37,7 @@ class RiskBreaker:
             return True
 
         # Get today's PnL from database
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         daily_pnl = self.db.get_daily_pnl(today)
 
         # Calculate loss percentage
@@ -74,7 +74,7 @@ class RiskBreaker:
 
     def get_status(self) -> dict:
         """Get current risk breaker status"""
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         daily_pnl = self.db.get_daily_pnl(today)
 
         if self.starting_balance and self.starting_balance > 0:

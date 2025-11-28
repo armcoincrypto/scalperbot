@@ -76,6 +76,9 @@ class MomentumBreakoutStrategy:
         df = df.copy()
         df['volume_mean'] = df['volume'].rolling(window=window).mean()
         df['volume_std'] = df['volume'].rolling(window=window).std()
+        # Guard against division by zero when std is 0 (all volumes identical)
+        # Replace zero std with small epsilon to avoid inf values
+        df['volume_std'] = df['volume_std'].replace(0, 1e-8)
         df['volume_zscore'] = (df['volume'] - df['volume_mean']) / df['volume_std']
         df['volume_zscore'] = df['volume_zscore'].fillna(0)
         return df
@@ -135,8 +138,14 @@ class MomentumBreakoutStrategy:
         is_squeezed = current_bb_width <= percentile_value
 
         # Check 2: Is BB width expanding by Y%?
-        expansion_pct = (current_bb_width - prev_bb_width) / prev_bb_width
-        is_expanding = expansion_pct >= expansion_threshold
+        # Guard against division by zero when prev_bb_width is 0
+        if prev_bb_width == 0 or prev_bb_width < 1e-10:
+            # If previous width was zero, any positive width is expansion
+            expansion_pct = 1.0 if current_bb_width > 0 else 0.0
+            is_expanding = current_bb_width > prev_bb_width
+        else:
+            expansion_pct = (current_bb_width - prev_bb_width) / prev_bb_width
+            is_expanding = expansion_pct >= expansion_threshold
 
         # Both conditions must be true
         passed = is_squeezed and is_expanding

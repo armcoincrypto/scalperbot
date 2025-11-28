@@ -200,8 +200,13 @@ class ScalperBot:
         logger.info("\n🛑 Shutting down ScalperBot...")
         self.running = False
 
-        if self.poller_task:
+        # Properly cancel asyncio tasks to prevent resource leaks
+        if self.poller_task and not self.poller_task.done():
             self.poller.stop()
+            try:
+                self.poller_task.cancel()
+            except Exception as e:
+                logger.warning(f"Error cancelling poller task: {e}")
 
         self.db.close()
         logger.info("✅ Shutdown complete")
