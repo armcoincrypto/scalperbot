@@ -33,16 +33,29 @@ class TelegramNotifier:
 
     def _format_signal_message(self, signal: Dict[str, Any]) -> str:
         """Format a trading signal for Telegram"""
+        import pandas as pd
+
         symbol = signal['symbol']
         action = signal['action']
         price = signal['price']
         timestamp = signal.get('timestamp', datetime.now())
 
-        # Format timestamp
+        # Format timestamp - handle pandas/numpy timestamps
         if isinstance(timestamp, str):
             time_str = timestamp
-        else:
+        elif isinstance(timestamp, (int, float)):
+            # Unix timestamp (seconds or milliseconds)
+            if timestamp > 1e10:  # Milliseconds
+                timestamp = timestamp / 1000
+            time_str = datetime.fromtimestamp(timestamp).strftime('%H:%M:%S')
+        elif isinstance(timestamp, pd.Timestamp):
             time_str = timestamp.strftime('%H:%M:%S')
+        elif hasattr(timestamp, 'strftime'):
+            # datetime-like object
+            time_str = timestamp.strftime('%H:%M:%S')
+        else:
+            # Fallback
+            time_str = str(timestamp)
 
         # Build message
         msg = f"🟢 <b>SIGNAL GENERATED</b>\n\n"
