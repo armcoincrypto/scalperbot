@@ -72,6 +72,11 @@ class RiskBreaker:
         self.is_breaker_tripped = False
         logger.info("Risk breaker reset for new trading day")
 
+    def get_daily_pnl(self) -> float:
+        """Get today's PnL"""
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        return self.db.get_daily_pnl(today)
+
     def get_status(self) -> dict:
         """Get current risk breaker status"""
         today = datetime.utcnow().strftime("%Y-%m-%d")

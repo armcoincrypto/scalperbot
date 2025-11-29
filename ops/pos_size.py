@@ -17,10 +17,27 @@ class PositionSizer:
     - Max position limits
     """
 
-    def __init__(self, default_size_usd: float = None, max_positions: int = None):
+    def __init__(self, default_size_usd: float = None, max_positions: int = None, db=None):
         self.default_size_usd = default_size_usd or settings.position_size_usd
         self.max_positions = max_positions or settings.max_positions
         self.current_positions = 0
+        self.db = db
+
+        # Sync positions from database if available
+        if self.db:
+            self.sync_from_database()
+
+    def sync_from_database(self):
+        """Sync position count from database open positions"""
+        if not self.db:
+            return
+
+        try:
+            open_positions = self.db.get_open_positions()
+            self.current_positions = len(open_positions)
+            logger.info(f"Synced position count from DB: {self.current_positions} open positions")
+        except Exception as e:
+            logger.warning(f"Could not sync positions from DB: {e}")
 
     def calculate_size(
         self,

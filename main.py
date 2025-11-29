@@ -18,6 +18,7 @@ from strategies.momentum_breakout import MomentumBreakoutStrategy
 from exec.router import OrderRouter
 from ops.pos_size import PositionSizer
 from risk.breaker import RiskBreaker
+from notifications.telegram import TelegramNotifier
 
 # Configure logging
 logging.basicConfig(
@@ -63,8 +64,18 @@ class ScalperBot:
         )
         self.strategy = MomentumBreakoutStrategy(self.candle_store)
         self.router = OrderRouter(self.exchange, self.orderbook)
-        self.position_sizer = PositionSizer()
+        self.position_sizer = PositionSizer(db=self.db)
         self.risk_breaker = RiskBreaker(self.db)
+
+        # Initialize Telegram notifier
+        self.telegram = TelegramNotifier(
+            settings.telegram_bot_token,
+            settings.telegram_chat_id
+        )
+        if self.telegram.enabled:
+            logger.info("Telegram notifications: ENABLED")
+        else:
+            logger.warning("Telegram notifications: DISABLED (check config)")
 
         # State
         self.running = False
@@ -75,6 +86,7 @@ class ScalperBot:
         logger.info("🔧 Initializing bot components...")
 
         # Get starting balance for risk breaker
+        usdt_balance = 0.0
         try:
             balance = self.exchange.fetch_balance()
             usdt_balance = balance.get('USDT', {}).get('free', 0)
@@ -83,8 +95,13 @@ class ScalperBot:
         except Exception as e:
             logger.warning(f"⚠️ Could not fetch balance: {e}")
             self.risk_breaker.set_starting_balance(1000.0)  # Default
+            usdt_balance = 1000.0
 
         logger.info("✅ Initialization complete")
+
+        # Send Telegram startup notification
+        mode = "DRY_RUN" if settings.dry_run else "LIVE"
+        await self.telegram.notify_bot_started(mode, settings.trading_pairs, usdt_balance)
 
     async def trading_loop(self):
         """Main trading loop - runs strategy and executes trades"""
@@ -101,6 +118,10 @@ class ScalperBot:
                 # Check risk breaker
                 if not self.risk_breaker.can_trade():
                     logger.error("⛔ Risk breaker active - skipping trading")
+                    await self.telegram.notify_risk_breaker(
+                        self.risk_breaker.get_daily_pnl(),
+                        settings.daily_loss_limit_pct
+                    )
                     await asyncio.sleep(settings.strategy_interval)
                     continue
 
@@ -131,6 +152,9 @@ class ScalperBot:
         logger.info(f"📢 EXECUTING SIGNAL: {action} {symbol} @ {price:.4f}")
         logger.info(f"{'*'*60}")
 
+        # Notify signal via Telegram
+        await self.telegram.notify_signal(signal)
+
         try:
             # Calculate position size
             pos_size = self.position_sizer.calculate_size(symbol, price)
@@ -160,6 +184,17 @@ class ScalperBot:
             if settings.dry_run:
                 logger.info(f"🔶 [DRY_RUN] Would place {action} order for {quantity:.6f} {symbol}")
                 self.db.update_trade_status(trade_id, 'DRY_RUN')
+                # Notify dry run order via Telegram
+                await self.telegram.notify_order_executed(
+                    symbol=symbol,
+                    side='buy' if action == 'BUY' else 'sell',
+                    quantity=quantity,
+                    price=price,
+                    notional=notional_usd,
+                    order_id="DRY_RUN",
+                    is_dry_run=True
+                )
+                self.position_sizer.increment_positions()
                 return
 
             # Place market order (for now - can switch to maker orders later)
@@ -171,12 +206,25 @@ class ScalperBot:
                 self.db.update_trade_status(trade_id, 'FILLED', order_id)
                 self.position_sizer.increment_positions()
                 logger.info(f"✅ Order executed successfully: {order_id}")
+                # Notify successful order via Telegram
+                await self.telegram.notify_order_executed(
+                    symbol=symbol,
+                    side=side,
+                    quantity=quantity,
+                    price=price,
+                    notional=notional_usd,
+                    order_id=str(order_id),
+                    is_dry_run=False
+                )
             else:
                 self.db.update_trade_status(trade_id, 'FAILED')
                 logger.error(f"❌ Order execution failed")
+                # Notify failed order via Telegram
+                await self.telegram.notify_order_failed(symbol, side, "Order returned None")
 
         except Exception as e:
             logger.error(f"❌ Error executing signal: {e}", exc_info=True)
+            await self.telegram.notify_error(str(e), f"Executing signal for {symbol}")
 
     async def run(self):
         """Main run method"""
@@ -191,10 +239,13 @@ class ScalperBot:
         # Start trading loop
         await self.trading_loop()
 
-    def shutdown(self):
+    async def shutdown(self, reason: str = "Manual shutdown"):
         """Graceful shutdown"""
         logger.info("\n🛑 Shutting down ScalperBot...")
         self.running = False
+
+        # Send Telegram shutdown notification
+        await self.telegram.notify_bot_stopped(reason)
 
         if self.poller_task:
             self.poller.stop()
@@ -210,8 +261,9 @@ async def main():
     # Handle shutdown signals
     def signal_handler(sig, frame):
         logger.info(f"\n⚠️ Received signal {sig}")
-        bot.shutdown()
-        sys.exit(0)
+        # Schedule async shutdown
+        asyncio.create_task(bot.shutdown(f"Signal {sig}"))
+        bot.running = False
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -220,10 +272,10 @@ async def main():
         await bot.run()
     except KeyboardInterrupt:
         logger.info("\n⚠️ Keyboard interrupt received")
-        bot.shutdown()
+        await bot.shutdown("Keyboard interrupt")
     except Exception as e:
         logger.error(f"❌ Fatal error: {e}", exc_info=True)
-        bot.shutdown()
+        await bot.shutdown(f"Fatal error: {e}")
         sys.exit(1)
 
 
