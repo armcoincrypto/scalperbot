@@ -1,10 +1,11 @@
 #!/bin/bash
 # ScalperBot Deployment Script
-# Deploys ScalperBot to VPS at root@207.180.212.142
+# Deploys ScalperBot to VPS
 
 set -e
 
-SERVER="root@207.180.212.142"
+# CHANGE THIS to your VPS IP address
+SERVER="root@YOUR_VPS_IP"
 REMOTE_DIR="/root/scalperbot"
 
 echo "🚀 Deploying ScalperBot to $SERVER..."
@@ -12,7 +13,7 @@ echo "🚀 Deploying ScalperBot to $SERVER..."
 # Copy files to server
 echo "📦 Copying files..."
 rsync -avz --exclude '.git' --exclude '__pycache__' --exclude '*.pyc' \
-    --exclude '.env' --exclude 'bot.log' --exclude 'trades.db' \
+    --exclude '.env' --exclude 'bot.log' --exclude 'trades.db' --exclude '.venv' \
     . $SERVER:$REMOTE_DIR/
 
 # Run setup on server
@@ -29,24 +30,24 @@ fi
 # Activate venv and install dependencies
 source .venv/bin/activate
 pip install --upgrade pip
-pip install -r scalperbot/requirements.txt
+pip install -r requirements.txt
 
 # Copy .env.example to .env if .env doesn't exist
 if [ ! -f ".env" ]; then
     echo "Creating .env from .env.example..."
-    cp scalperbot/.env.example .env
+    cp .env.example .env
     echo "⚠️  Please edit .env with your API keys!"
 fi
 
 # Install systemd service
 echo "Installing systemd service..."
-sudo cp scalperbot/scalperbot.service /etc/systemd/system/
+sudo cp scalperbot.service /etc/systemd/system/
 sudo systemctl daemon-reload
 
 echo "✅ Deployment complete!"
 echo ""
 echo "Next steps:"
-echo "1. Edit /root/scalperbot/.env with your API keys"
+echo "1. Edit /root/scalperbot/.env with your API keys and Telegram config"
 echo "2. sudo systemctl start scalperbot"
 echo "3. sudo systemctl enable scalperbot"
 echo "4. tail -f /root/scalperbot/bot.log"

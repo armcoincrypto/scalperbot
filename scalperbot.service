@@ -7,7 +7,7 @@ Type=simple
 User=root
 WorkingDirectory=/root/scalperbot
 Environment="PATH=/root/scalperbot/.venv/bin"
-ExecStart=/root/scalperbot/.venv/bin/python -m scalperbot.main
+ExecStart=/root/scalperbot/.venv/bin/python /root/scalperbot/main.py
 Restart=always
 RestartSec=10
 StandardOutput=append:/root/scalperbot/bot.log
