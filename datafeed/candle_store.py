@@ -173,6 +173,35 @@ class CandleStore:
             return None
         return self.candles_1m[symbol].iloc[-1]['close']
 
+    def update_latest(
+        self,
+        symbol: str,
+        high: float,
+        low: float,
+        close: float,
+        volume: float
+    ):
+        """
+        Update the latest candle in real-time (from WebSocket)
+        Used for live price updates before candle closes
+        """
+        if symbol not in self.candles_1m or self.candles_1m[symbol].empty:
+            return
+
+        df = self.candles_1m[symbol]
+        idx = len(df) - 1
+
+        # Update high/low if exceeded
+        current_high = df.iloc[idx]['high']
+        current_low = df.iloc[idx]['low']
+
+        df.at[idx, 'high'] = max(current_high, high)
+        df.at[idx, 'low'] = min(current_low, low)
+        df.at[idx, 'close'] = close
+        df.at[idx, 'volume'] = volume
+
+        logger.debug(f"Updated latest candle for {symbol}: close=${close:.4f}")
+
     def summary(self) -> str:
         """Get summary of stored data"""
         lines = ["📊 CandleStore Summary:"]

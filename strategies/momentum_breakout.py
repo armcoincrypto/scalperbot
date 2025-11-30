@@ -3,7 +3,7 @@ Momentum Breakout Strategy
 4-filter GREEN strategy for identifying breakout opportunities
 
 GREEN 1: Trend check - 5m price > price 2 bars ago
-GREEN 2: BB expansion - Bollinger Band width growing
+GREEN 2: BB expansion - Bollinger Band width growing (DYNAMIC thresholds)
 GREEN 3: Volume surge - Volume Z-score > threshold
 GREEN 4: Breakout - Price > 10-period high + buffer
 
@@ -14,6 +14,7 @@ import numpy as np
 from typing import Optional, Dict, Any
 import logging
 from datafeed.candle_store import CandleStore
+from strategies.dynamic_thresholds import DynamicThresholds
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 class MomentumBreakoutStrategy:
     """
     Momentum Breakout Strategy with 4-filter GREEN system
+    Now with dynamic BB expansion thresholds!
     """
 
     def __init__(self, candle_store: CandleStore):
@@ -34,6 +36,20 @@ class MomentumBreakoutStrategy:
         self.volume_enabled = settings.green3_enabled
         self.breakout_period = settings.green4_breakout_period
         self.breakout_buffer_bps = settings.green4_breakout_buffer_bps
+
+        # Dynamic thresholds for GREEN 2
+        self.use_dynamic_green2 = getattr(settings, 'use_dynamic_green2', True)
+        self.dynamic_thresholds = DynamicThresholds(
+            no_signal_relax_minutes=getattr(settings, 'squeeze_no_signal_timeout_minutes', 30),
+            max_relax_factor=0.5,
+            enable_session_adjustment=True,
+            enable_time_relaxation=True
+        )
+
+        if self.use_dynamic_green2:
+            logger.info("📊 Dynamic GREEN 2 thresholds ENABLED")
+        else:
+            logger.info("📊 Using static GREEN 2 thresholds")
 
     def calculate_bollinger_bands(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate Bollinger Bands"""
@@ -70,10 +86,10 @@ class MomentumBreakoutStrategy:
         msg = f"GREEN 1: Price={current_price:.4f}, 2bars_ago={price_2bars_ago:.4f}, trending={'UP ✅' if trend_up else 'DOWN ❌'}"
         return trend_up, msg
 
-    def check_green2_bb_expansion(self, df: pd.DataFrame) -> tuple[bool, str]:
+    def check_green2_bb_expansion(self, df: pd.DataFrame, symbol: str = "") -> tuple[bool, str]:
         """
         GREEN 2: Bollinger Band expansion
-        BB width must be increasing (volatility expanding)
+        Uses dynamic thresholds based on session and time since last signal
         """
         if len(df) < self.bb_period + 2:
             return False, "GREEN 2: Not enough data for BB calculation"
@@ -83,8 +99,15 @@ class MomentumBreakoutStrategy:
         current_bb_width = df.iloc[-1]['bb_width']
         prev_bb_width = df.iloc[-2]['bb_width']
 
-        expanding = current_bb_width > prev_bb_width
+        # Use dynamic thresholds if enabled
+        if self.use_dynamic_green2 and symbol:
+            passed, msg, details = self.dynamic_thresholds.check_bb_expansion_dynamic(
+                symbol, current_bb_width, prev_bb_width, df
+            )
+            return passed, msg
 
+        # Fallback to simple expansion check
+        expanding = current_bb_width > prev_bb_width
         msg = f"GREEN 2: BB_width={current_bb_width:.6f}, prev={prev_bb_width:.6f}, expanding={expanding}"
         return expanding, msg
 
@@ -150,7 +173,7 @@ class MomentumBreakoutStrategy:
 
         # Run all 4 GREEN filters
         green1_pass, green1_msg = self.check_green1_trend(df)
-        green2_pass, green2_msg = self.check_green2_bb_expansion(df)
+        green2_pass, green2_msg = self.check_green2_bb_expansion(df, symbol)  # Pass symbol for dynamic thresholds
         green3_pass, green3_msg = self.check_green3_volume_surge(df)
         green4_pass, green4_msg = self.check_green4_breakout(df)
 
@@ -166,6 +189,10 @@ class MomentumBreakoutStrategy:
         all_pass = green1_pass and green2_pass and green3_pass and green4_pass
 
         if all_pass:
+            # Record signal for dynamic threshold relaxation timer
+            if self.use_dynamic_green2:
+                self.dynamic_thresholds.record_signal(symbol)
+
             signal = {
                 'symbol': symbol,
                 'action': 'BUY',

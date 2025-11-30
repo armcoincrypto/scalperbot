@@ -49,10 +49,23 @@ class PositionManager:
         self.trailing_stop_pct = trailing_stop_pct
         self.highest_prices: Dict[int, float] = {}  # trade_id -> highest price seen
 
+        # Partial take-profit settings
+        self.use_partial_tp = getattr(settings, 'use_partial_tp', False)
+        self.partial_tp1_pct = getattr(settings, 'partial_tp1_pct', 0.8)
+        self.partial_tp1_size = getattr(settings, 'partial_tp1_size', 0.5)
+        self.partial_tp2_pct = getattr(settings, 'partial_tp2_pct', 1.6)
+        self.partial_tp2_size = getattr(settings, 'partial_tp2_size', 0.5)
+
+        # Track which TP level each position has hit (trade_id -> 'TP1' or 'TP2')
+        self._tp_levels_hit: Dict[int, str] = {}
+
         # Track pending exits to prevent race conditions
         self._pending_exits: set = set()
 
-        logger.info(f"PositionManager initialized: TP={take_profit_pct}%, SL={stop_loss_pct}%, MaxHold={max_hold_hours}h")
+        if self.use_partial_tp:
+            logger.info(f"PositionManager initialized: TP1={self.partial_tp1_pct}% ({self.partial_tp1_size*100:.0f}%), TP2={self.partial_tp2_pct}% ({self.partial_tp2_size*100:.0f}%), SL={stop_loss_pct}%")
+        else:
+            logger.info(f"PositionManager initialized: TP={take_profit_pct}%, SL={stop_loss_pct}%, MaxHold={max_hold_hours}h")
 
     def get_open_positions(self) -> List[Dict[str, Any]]:
         """Get all open positions from database"""
@@ -89,17 +102,55 @@ class PositionManager:
 
         return pnl_pct
 
-    def check_take_profit(self, position: Dict, current_price: float) -> bool:
-        """Check if position has reached take profit target"""
+    def check_take_profit(self, position: Dict, current_price: float) -> Optional[Dict]:
+        """
+        Check if position has reached take profit target
+
+        Returns None if no TP hit, or dict with TP details for partial exits
+        """
         entry_price = position['price']
         side = position['side']
+        trade_id = position['id']
 
         pnl_pct = self.calculate_pnl_pct(entry_price, current_price, side)
 
+        # Partial take-profit mode
+        if self.use_partial_tp:
+            tp_level_hit = self._tp_levels_hit.get(trade_id)
+
+            # Check TP2 (if TP1 already hit)
+            if tp_level_hit == 'TP1' and pnl_pct >= self.partial_tp2_pct:
+                logger.info(f"🎯 TP2 hit for {position['symbol']}: {pnl_pct:.2f}% >= {self.partial_tp2_pct}%")
+                return {
+                    'level': 'TP2',
+                    'pct': self.partial_tp2_pct,
+                    'size_pct': self.partial_tp2_size,
+                    'is_final': True  # Close remaining position
+                }
+
+            # Check TP1 (if not hit yet)
+            if tp_level_hit is None and pnl_pct >= self.partial_tp1_pct:
+                logger.info(f"🎯 TP1 hit for {position['symbol']}: {pnl_pct:.2f}% >= {self.partial_tp1_pct}%")
+                return {
+                    'level': 'TP1',
+                    'pct': self.partial_tp1_pct,
+                    'size_pct': self.partial_tp1_size,
+                    'is_final': False  # Partial close
+                }
+
+            return None
+
+        # Standard single take-profit
         if pnl_pct >= self.take_profit_pct:
             logger.info(f"🎯 Take Profit hit for {position['symbol']}: {pnl_pct:.2f}% >= {self.take_profit_pct}%")
-            return True
-        return False
+            return {
+                'level': 'TP',
+                'pct': self.take_profit_pct,
+                'size_pct': 1.0,
+                'is_final': True
+            }
+
+        return None
 
     def check_stop_loss(self, position: Dict, current_price: float) -> bool:
         """Check if position has hit stop loss"""
@@ -194,36 +245,63 @@ class PositionManager:
             logger.debug(f"{symbol}: Entry=${entry_price:.4f}, Current=${current_price:.4f}, PnL={pnl_pct_raw:.2f}% (net: {pnl_pct_net:.2f}%)")
 
             exit_reason = None
+            exit_quantity = position['quantity']
+            exit_notional = position['notional']
+            is_partial = False
+            tp_info = None
 
             # Check exit conditions in order of priority
+            # 1. Stop Loss (always full exit)
             if self.check_stop_loss(position, current_price):
                 exit_reason = 'STOP_LOSS'
-            elif self.check_take_profit(position, current_price):
-                exit_reason = 'TAKE_PROFIT'
+
+            # 2. Take Profit (may be partial with partial TP mode)
+            elif (tp_info := self.check_take_profit(position, current_price)):
+                exit_reason = f"TAKE_PROFIT_{tp_info['level']}"
+                is_partial = not tp_info['is_final']
+
+                if is_partial:
+                    # Partial exit - calculate exit quantity
+                    exit_quantity = position['quantity'] * tp_info['size_pct']
+                    exit_notional = position['notional'] * tp_info['size_pct']
+                    # Record TP1 hit for this position
+                    self._tp_levels_hit[trade_id] = tp_info['level']
+
+            # 3. Trailing Stop
             elif self.check_trailing_stop(position, current_price):
                 exit_reason = 'TRAILING_STOP'
+
+            # 4. Max Hold Time
             elif self.check_max_hold_time(position):
                 exit_reason = 'MAX_HOLD_TIME'
 
             if exit_reason:
-                # Mark as pending to prevent duplicate exits
-                self._pending_exits.add(trade_id)
+                # Mark as pending to prevent duplicate exits (unless partial)
+                if not is_partial:
+                    self._pending_exits.add(trade_id)
+
+                # Calculate PnL for exit quantity
+                exit_pnl_usd = exit_notional * (pnl_pct_net / 100)
 
                 exit_signal = {
                     'symbol': symbol,
                     'action': 'SELL',
                     'price': current_price,
                     'entry_price': entry_price,
-                    'quantity': position['quantity'],
+                    'quantity': exit_quantity,
+                    'original_quantity': position['quantity'],
                     'pnl_pct': pnl_pct_raw,  # Report raw PnL
                     'pnl_pct_net': pnl_pct_net,  # Net PnL after fees
-                    'pnl_usd': position['notional'] * (pnl_pct_net / 100),  # Use net for USD
+                    'pnl_usd': exit_pnl_usd,
                     'reason': exit_reason,
                     'trade_id': trade_id,
+                    'is_partial': is_partial,
                     'timestamp': datetime.utcnow().isoformat()
                 }
                 exit_signals.append(exit_signal)
-                logger.info(f"🔴 EXIT SIGNAL: {symbol} - {exit_reason} - PnL: {pnl_pct_raw:.2f}% (net: {pnl_pct_net:.2f}%)")
+
+                partial_tag = " (PARTIAL)" if is_partial else ""
+                logger.info(f"🔴 EXIT SIGNAL: {symbol} - {exit_reason}{partial_tag} - Qty: {exit_quantity:.6f} - PnL: {pnl_pct_raw:.2f}%")
 
         return exit_signals
 
@@ -247,9 +325,38 @@ class PositionManager:
         self._pending_exits.discard(trade_id)
         if trade_id in self.highest_prices:
             del self.highest_prices[trade_id]
+        if trade_id in self._tp_levels_hit:
+            del self._tp_levels_hit[trade_id]
 
         logger.info(f"Position {trade_id} closed. PnL: ${pnl:.2f}")
         return True
+
+    def partial_close_position(
+        self,
+        trade_id: int,
+        exit_quantity: float,
+        remaining_quantity: float,
+        remaining_notional: float,
+        partial_pnl: float
+    ) -> bool:
+        """
+        Partially close a position (for partial take-profits).
+
+        Updates the position's remaining quantity in the database.
+        Returns True if successful.
+        """
+        try:
+            self.db.update_position_quantity(
+                trade_id,
+                remaining_quantity,
+                remaining_notional,
+                partial_pnl
+            )
+            logger.info(f"Position {trade_id} partially closed. Sold: {exit_quantity:.6f}, Remaining: {remaining_quantity:.6f}, PnL: ${partial_pnl:.2f}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to partially close position {trade_id}: {e}")
+            return False
 
     def get_position_summary(self) -> str:
         """Get a summary of all open positions"""

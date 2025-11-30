@@ -14,6 +14,7 @@ from exchanges.adapter import MEXCAdapter
 from datafeed.candle_store import CandleStore
 from datafeed.orderbook import OrderBook
 from datafeed.rest_poller import RESTPoller
+from datafeed.websocket_feed import HybridDataFeed, WEBSOCKETS_AVAILABLE
 from strategies.momentum_breakout import MomentumBreakoutStrategy
 from exec.router import OrderRouter
 from exec.position_manager import PositionManager
@@ -56,13 +57,30 @@ class ScalperBot:
         )
         self.candle_store = CandleStore()
         self.orderbook = OrderBook()
-        self.poller = RESTPoller(
-            self.exchange,
-            self.candle_store,
-            self.orderbook,
-            settings.trading_pairs,
-            settings.data_poll_interval
-        )
+
+        # Choose data feed mode: WebSocket (real-time) or REST (polling)
+        self.use_websocket = settings.use_websocket and WEBSOCKETS_AVAILABLE
+        if self.use_websocket:
+            logger.info("📡 Using WebSocket + REST hybrid data feed (real-time)")
+            self.data_feed = HybridDataFeed(
+                self.exchange,
+                self.candle_store,
+                self.orderbook,
+                settings.trading_pairs,
+                settings.data_poll_interval
+            )
+            self.poller = None  # Not used in WebSocket mode
+        else:
+            logger.info("📡 Using REST-only data feed (polling)")
+            self.poller = RESTPoller(
+                self.exchange,
+                self.candle_store,
+                self.orderbook,
+                settings.trading_pairs,
+                settings.data_poll_interval
+            )
+            self.data_feed = None
+
         self.strategy = MomentumBreakoutStrategy(self.candle_store)
         self.router = OrderRouter(self.exchange, self.orderbook)
         self.position_sizer = PositionSizer(db=self.db)
@@ -265,18 +283,21 @@ class ScalperBot:
             await self.telegram.notify_error(str(e), f"Executing signal for {symbol}")
 
     async def execute_exit_signal(self, exit_signal: dict):
-        """Execute an exit signal (SELL to close position)"""
+        """Execute an exit signal (SELL to close position, full or partial)"""
         symbol = exit_signal['symbol']
         quantity = exit_signal['quantity']
+        original_quantity = exit_signal.get('original_quantity', quantity)
         exit_price = exit_signal['price']
         entry_price = exit_signal['entry_price']
         pnl_pct = exit_signal['pnl_pct']
         pnl_usd = exit_signal['pnl_usd']
         reason = exit_signal['reason']
         trade_id = exit_signal['trade_id']
+        is_partial = exit_signal.get('is_partial', False)
 
+        partial_tag = " (PARTIAL)" if is_partial else ""
         logger.info(f"\n{'*'*60}")
-        logger.info(f"🔴 EXECUTING EXIT: SELL {symbol} @ {exit_price:.4f}")
+        logger.info(f"🔴 EXECUTING EXIT{partial_tag}: SELL {quantity:.6f} {symbol} @ {exit_price:.4f}")
         logger.info(f"   Reason: {reason} | PnL: {pnl_pct:+.2f}% (${pnl_usd:+.2f})")
         logger.info(f"{'*'*60}")
 
@@ -284,13 +305,21 @@ class ScalperBot:
             if settings.dry_run:
                 logger.info(f"🔶 [DRY_RUN] Would place SELL order for {quantity:.6f} {symbol}")
 
-                # Close position in database (atomic - returns False if already closed)
-                was_closed = self.position_manager.close_position(trade_id, exit_price, pnl_usd)
-                if not was_closed:
-                    logger.info(f"Position {trade_id} already closed - skipping notification")
-                    return
-
-                self.position_sizer.decrement_positions()
+                if is_partial:
+                    # Partial exit - update position quantity
+                    remaining_quantity = original_quantity - quantity
+                    remaining_notional = remaining_quantity * entry_price
+                    self.position_manager.partial_close_position(
+                        trade_id, quantity, remaining_quantity, remaining_notional, pnl_usd
+                    )
+                    # Don't decrement position count for partial exits
+                else:
+                    # Full exit - close position
+                    was_closed = self.position_manager.close_position(trade_id, exit_price, pnl_usd)
+                    if not was_closed:
+                        logger.info(f"Position {trade_id} already closed - skipping notification")
+                        return
+                    self.position_sizer.decrement_positions()
 
                 # Notify via Telegram
                 await self.telegram.notify_position_closed(
@@ -300,7 +329,7 @@ class ScalperBot:
                     quantity=quantity,
                     pnl_pct=pnl_pct,
                     pnl_usd=pnl_usd,
-                    reason=reason,
+                    reason=reason + partial_tag,
                     is_dry_run=True
                 )
                 return
@@ -312,13 +341,21 @@ class ScalperBot:
                 order_id = order.get('id')
                 logger.info(f"✅ Exit order executed: {order_id}")
 
-                # Close position in database (atomic - returns False if already closed)
-                was_closed = self.position_manager.close_position(trade_id, exit_price, pnl_usd)
-                if not was_closed:
-                    logger.warning(f"Position {trade_id} already closed - order executed but DB unchanged")
-                    return
-
-                self.position_sizer.decrement_positions()
+                if is_partial:
+                    # Partial exit - update position quantity
+                    remaining_quantity = original_quantity - quantity
+                    remaining_notional = remaining_quantity * entry_price
+                    self.position_manager.partial_close_position(
+                        trade_id, quantity, remaining_quantity, remaining_notional, pnl_usd
+                    )
+                    # Don't decrement position count for partial exits
+                else:
+                    # Full exit - close position
+                    was_closed = self.position_manager.close_position(trade_id, exit_price, pnl_usd)
+                    if not was_closed:
+                        logger.warning(f"Position {trade_id} already closed - order executed but DB unchanged")
+                        return
+                    self.position_sizer.decrement_positions()
 
                 # Notify via Telegram
                 await self.telegram.notify_position_closed(
@@ -328,7 +365,7 @@ class ScalperBot:
                     quantity=quantity,
                     pnl_pct=pnl_pct,
                     pnl_usd=pnl_usd,
-                    reason=reason,
+                    reason=reason + partial_tag,
                     is_dry_run=False
                 )
             else:
@@ -346,8 +383,13 @@ class ScalperBot:
         # Initialize
         await self.initialize()
 
-        # Start data poller in background
-        self.poller_task = asyncio.create_task(self.poller.run())
+        # Start data feed in background (WebSocket or REST)
+        if self.use_websocket and self.data_feed:
+            self.poller_task = asyncio.create_task(self.data_feed.run())
+            logger.info("🚀 WebSocket data feed started")
+        elif self.poller:
+            self.poller_task = asyncio.create_task(self.poller.run())
+            logger.info("🚀 REST data poller started")
 
         # Start trading loop
         await self.trading_loop()
@@ -360,7 +402,10 @@ class ScalperBot:
         # Send Telegram shutdown notification
         await self.telegram.notify_bot_stopped(reason)
 
-        if self.poller_task:
+        # Stop data feed
+        if self.use_websocket and self.data_feed:
+            self.data_feed.stop()
+        elif self.poller:
             self.poller.stop()
 
         self.db.close()

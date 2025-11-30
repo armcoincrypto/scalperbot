@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     # Strategy parameters
     strategy_interval: int = 60  # Run strategy every N seconds
     data_poll_interval: int = 10  # Poll market data every N seconds
+    use_websocket: bool = True  # Use WebSocket for real-time data (falls back to REST if unavailable)
 
     # GREEN filter thresholds (momentum breakout strategy)
     green2_bb_period: int = 20
@@ -59,9 +60,16 @@ class Settings(BaseSettings):
     per_symbol_max_notional_pct: float = 5.0  # Max notional per symbol as % of account
 
     # Take Profit / Stop Loss (Position Exit)
-    take_profit_pct: float = 1.5  # Close position at +1.5% profit
+    take_profit_pct: float = 1.5  # Close position at +1.5% profit (or use partial TPs)
     stop_loss_pct: float = 1.0  # Close position at -1.0% loss
     max_hold_hours: int = 24  # Close position after 24 hours regardless of PnL
+
+    # Partial Take-Profits (scale-out exits)
+    use_partial_tp: bool = True  # Enable partial take-profits
+    partial_tp1_pct: float = 0.8  # First TP at +0.8%
+    partial_tp1_size: float = 0.5  # Close 50% of position at TP1
+    partial_tp2_pct: float = 1.6  # Second TP at +1.6%
+    partial_tp2_size: float = 0.5  # Close remaining 50% at TP2
 
     # Database
     database_path: str = "scalperbot/trades.db"

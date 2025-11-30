@@ -3,9 +3,12 @@ Database module for trade logging
 SQLite-based trade history storage
 """
 import sqlite3
+import logging
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class TradeDB:
@@ -166,6 +169,23 @@ class TradeDB:
             self.update_daily_pnl(pnl)
             return True
         return False  # Already closed or doesn't exist
+
+    def update_position_quantity(self, trade_id: int, new_quantity: float, new_notional: float, partial_pnl: float):
+        """
+        Update position quantity after partial exit.
+        Also records the partial PnL realized.
+        """
+        self.conn.execute("""
+            UPDATE trades
+            SET quantity = ?, notional = ?, pnl = pnl + ?
+            WHERE id = ?
+        """, (new_quantity, new_notional, partial_pnl, trade_id))
+        self.conn.commit()
+
+        # Update daily PnL with partial realized profit
+        self.update_daily_pnl(partial_pnl)
+
+        logger.info(f"Position {trade_id} updated: qty={new_quantity:.6f}, notional=${new_notional:.2f}, partial_pnl=${partial_pnl:.2f}")
 
     def close(self):
         """Close database connection"""
