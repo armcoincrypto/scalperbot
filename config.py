@@ -55,6 +55,8 @@ class Settings(BaseSettings):
 
     # Risk management
     daily_loss_limit_pct: float = 3.0  # Stop trading if down 3% for the day
+    max_exposure_pct: float = 10.0  # Max total notional as % of account (e.g., 10% of $1000 = $100 max exposure)
+    per_symbol_max_notional_pct: float = 5.0  # Max notional per symbol as % of account
 
     # Take Profit / Stop Loss (Position Exit)
     take_profit_pct: float = 1.5  # Close position at +1.5% profit

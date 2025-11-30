@@ -95,16 +95,18 @@ class ScalperBot:
         """Initialize bot (fetch balance, set risk params, etc.)"""
         logger.info("🔧 Initializing bot components...")
 
-        # Get starting balance for risk breaker
+        # Get starting balance for risk breaker and exposure calculations
         usdt_balance = 0.0
         try:
             balance = self.exchange.fetch_balance()
             usdt_balance = balance.get('USDT', {}).get('free', 0)
             self.risk_breaker.set_starting_balance(usdt_balance)
+            self.position_sizer.set_account_balance(usdt_balance)  # For exposure limits
             logger.info(f"💰 USDT Balance: ${usdt_balance:.2f}")
         except Exception as e:
             logger.warning(f"⚠️ Could not fetch balance: {e}")
             self.risk_breaker.set_starting_balance(1000.0)  # Default
+            self.position_sizer.set_account_balance(1000.0)  # Default
             usdt_balance = 1000.0
 
         logger.info("✅ Initialization complete")
@@ -146,6 +148,13 @@ class ScalperBot:
 
                 # Log position summary
                 logger.info(self.position_manager.get_position_summary())
+
+                # Log exposure status
+                total_exposure = self.position_sizer.get_total_exposure()
+                max_exposure = self.position_sizer.account_balance_usd * (self.position_sizer.max_exposure_pct / 100)
+                if self.position_sizer.account_balance_usd > 0:
+                    exposure_pct = (total_exposure / self.position_sizer.account_balance_usd) * 100
+                    logger.info(f"💰 Exposure: ${total_exposure:.2f}/{max_exposure:.2f} ({exposure_pct:.1f}%/{self.position_sizer.max_exposure_pct}%)")
 
                 # Run strategy for all symbols (only if we can open more positions)
                 if self.position_sizer.can_open_position():

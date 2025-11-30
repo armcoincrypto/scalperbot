@@ -24,8 +24,13 @@ class PositionSizer:
         self.max_positions = max_positions or settings.max_positions
         self.max_positions_per_symbol = getattr(settings, 'max_positions_per_symbol', 1)
         self.trade_cooldown_seconds = getattr(settings, 'trade_cooldown_seconds', 300)
+        self.max_exposure_pct = getattr(settings, 'max_exposure_pct', 10.0)
+        self.per_symbol_max_notional_pct = getattr(settings, 'per_symbol_max_notional_pct', 5.0)
         self.current_positions = 0
         self.db = db
+
+        # Account balance for exposure calculations (updated externally)
+        self.account_balance_usd: float = 0.0
 
         # Track last trade time per symbol for cooldown
         self._last_trade_time: Dict[str, datetime] = {}
@@ -146,6 +151,60 @@ class PositionSizer:
         self._last_trade_time[symbol] = datetime.utcnow()
         logger.debug(f"Trade recorded for {symbol}, cooldown started")
 
+    def set_account_balance(self, balance_usd: float):
+        """Set account balance for exposure calculations"""
+        self.account_balance_usd = balance_usd
+        logger.debug(f"Account balance set to ${balance_usd:.2f}")
+
+    def get_total_exposure(self) -> float:
+        """Get total notional exposure across all open positions"""
+        if not self.db:
+            return 0.0
+        try:
+            open_positions = self.db.get_open_positions()
+            return sum(p.get('notional', 0) for p in open_positions)
+        except Exception as e:
+            logger.warning(f"Could not calculate total exposure: {e}")
+            return 0.0
+
+    def get_symbol_exposure(self, symbol: str) -> float:
+        """Get total notional exposure for a specific symbol"""
+        if not self.db:
+            return 0.0
+        try:
+            open_positions = self.db.get_open_positions()
+            return sum(p.get('notional', 0) for p in open_positions if p['symbol'] == symbol)
+        except Exception as e:
+            logger.warning(f"Could not calculate exposure for {symbol}: {e}")
+            return 0.0
+
+    def check_exposure_limits(self, symbol: str, new_notional: float) -> tuple[bool, str]:
+        """
+        Check if adding a new position would exceed exposure limits.
+
+        Returns:
+            (within_limits, reason) tuple
+        """
+        if self.account_balance_usd <= 0:
+            # If no balance set, skip exposure checks
+            return True, "OK (no balance set)"
+
+        # Calculate current exposures
+        total_exposure = self.get_total_exposure()
+        symbol_exposure = self.get_symbol_exposure(symbol)
+
+        # Check total exposure limit
+        max_total = self.account_balance_usd * (self.max_exposure_pct / 100)
+        if total_exposure + new_notional > max_total:
+            return False, f"Total exposure ${total_exposure + new_notional:.2f} > max ${max_total:.2f} ({self.max_exposure_pct}%)"
+
+        # Check per-symbol exposure limit
+        max_symbol = self.account_balance_usd * (self.per_symbol_max_notional_pct / 100)
+        if symbol_exposure + new_notional > max_symbol:
+            return False, f"{symbol} exposure ${symbol_exposure + new_notional:.2f} > max ${max_symbol:.2f} ({self.per_symbol_max_notional_pct}%)"
+
+        return True, "OK"
+
     def can_open_position_for_symbol(self, symbol: str) -> tuple[bool, str]:
         """
         Check if we can open a position for a specific symbol.
@@ -165,5 +224,10 @@ class PositionSizer:
         # Check cooldown
         if self.is_on_cooldown(symbol):
             return False, f"{symbol} is on trade cooldown"
+
+        # Check exposure limits
+        within_limits, reason = self.check_exposure_limits(symbol, self.default_size_usd)
+        if not within_limits:
+            return False, reason
 
         return True, "OK"
