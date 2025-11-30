@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     # Position sizing
     position_size_usd: float = 100.0  # Default position size
     max_positions: int = 3
+    max_positions_per_symbol: int = 1  # Only 1 position per trading pair
+    trade_cooldown_seconds: int = 300  # 5 minute cooldown between trades on same symbol
 
     # Risk management
     daily_loss_limit_pct: float = 3.0  # Stop trading if down 3% for the day

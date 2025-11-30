@@ -169,6 +169,12 @@ class ScalperBot:
         action = signal['action']
         price = signal['price']
 
+        # Check per-symbol position limit and cooldown BEFORE executing
+        can_open, reason = self.position_sizer.can_open_position_for_symbol(symbol)
+        if not can_open:
+            logger.info(f"⏭️ Skipping {symbol} signal: {reason}")
+            return
+
         logger.info(f"\n{'*'*60}")
         logger.info(f"📢 EXECUTING SIGNAL: {action} {symbol} @ {price:.4f}")
         logger.info(f"{'*'*60}")
@@ -216,6 +222,7 @@ class ScalperBot:
                     is_dry_run=True
                 )
                 self.position_sizer.increment_positions()
+                self.position_sizer.record_trade(symbol)  # Start cooldown
                 return
 
             # Place market order (for now - can switch to maker orders later)
@@ -226,6 +233,7 @@ class ScalperBot:
                 order_id = order.get('id')
                 self.db.update_trade_status(trade_id, 'FILLED', order_id)
                 self.position_sizer.increment_positions()
+                self.position_sizer.record_trade(symbol)  # Start cooldown
                 logger.info(f"✅ Order executed successfully: {order_id}")
                 # Notify successful order via Telegram
                 await self.telegram.notify_order_executed(
