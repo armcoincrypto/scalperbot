@@ -141,13 +141,31 @@ class TradeDB:
         return [dict(row) for row in cursor.fetchall()]
 
     def get_open_positions(self) -> List[Dict[str, Any]]:
-        """Get currently open positions"""
+        """Get currently open positions (including DRY_RUN trades)"""
         cursor = self.conn.execute("""
             SELECT * FROM trades
-            WHERE status IN ('FILLED', 'OPEN')
+            WHERE status IN ('FILLED', 'OPEN', 'DRY_RUN')
             ORDER BY created_at DESC
         """)
         return [dict(row) for row in cursor.fetchall()]
+
+    def close_position_atomic(self, trade_id: int, pnl: float) -> bool:
+        """
+        Atomically close a position - prevents double exits on restart.
+        Returns True if closed, False if already closed.
+        """
+        cursor = self.conn.execute("""
+            UPDATE trades
+            SET status = 'CLOSED', pnl = ?
+            WHERE id = ? AND status IN ('FILLED', 'OPEN', 'DRY_RUN')
+        """, (pnl, trade_id))
+        self.conn.commit()
+
+        if cursor.rowcount > 0:
+            # Also update daily PnL
+            self.update_daily_pnl(pnl)
+            return True
+        return False  # Already closed or doesn't exist
 
     def close(self):
         """Close database connection"""

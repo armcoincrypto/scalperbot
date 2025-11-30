@@ -23,6 +23,9 @@ class PositionManager:
     - Time-based exit: Close position after max holding time
     """
 
+    # MEXC fee rates (taker fees for market orders)
+    TAKER_FEE_PCT = 0.1  # 0.1% taker fee on MEXC
+
     def __init__(
         self,
         db: TradeDB,
@@ -46,6 +49,9 @@ class PositionManager:
         self.trailing_stop_pct = trailing_stop_pct
         self.highest_prices: Dict[int, float] = {}  # trade_id -> highest price seen
 
+        # Track pending exits to prevent race conditions
+        self._pending_exits: set = set()
+
         logger.info(f"PositionManager initialized: TP={take_profit_pct}%, SL={stop_loss_pct}%, MaxHold={max_hold_hours}h")
 
     def get_open_positions(self) -> List[Dict[str, Any]]:
@@ -56,14 +62,32 @@ class PositionManager:
         """Get current mid price for a symbol"""
         return self.orderbook.get_mid_price(symbol)
 
-    def calculate_pnl_pct(self, entry_price: float, current_price: float, side: str) -> float:
-        """Calculate PnL percentage for a position"""
+    def calculate_pnl_pct(self, entry_price: float, current_price: float, side: str, include_fees: bool = False) -> float:
+        """
+        Calculate PnL percentage for a position
+
+        Args:
+            entry_price: Entry price
+            current_price: Current/exit price
+            side: 'buy' or 'sell'
+            include_fees: If True, deduct estimated taker fees (entry + exit)
+
+        Returns:
+            PnL percentage (negative for loss)
+        """
         if side.lower() == 'buy':
             # Long position: profit when price goes up
-            return ((current_price - entry_price) / entry_price) * 100
+            pnl_pct = ((current_price - entry_price) / entry_price) * 100
         else:
             # Short position: profit when price goes down
-            return ((entry_price - current_price) / entry_price) * 100
+            pnl_pct = ((entry_price - current_price) / entry_price) * 100
+
+        if include_fees:
+            # Deduct fees: entry taker fee + exit taker fee
+            total_fees = self.TAKER_FEE_PCT * 2  # 0.2% total
+            pnl_pct -= total_fees
+
+        return pnl_pct
 
     def check_take_profit(self, position: Dict, current_price: float) -> bool:
         """Check if position has reached take profit target"""
@@ -147,7 +171,14 @@ class PositionManager:
         logger.info(f"📊 Checking {len(positions)} open positions for exit conditions...")
 
         for position in positions:
+            trade_id = position['id']
             symbol = position['symbol']
+
+            # Skip if already pending exit (race condition protection)
+            if trade_id in self._pending_exits:
+                logger.debug(f"Skipping {symbol} (trade_id={trade_id}) - already pending exit")
+                continue
+
             current_price = self.get_current_price(symbol)
 
             if current_price is None:
@@ -155,9 +186,12 @@ class PositionManager:
                 continue
 
             entry_price = position['price']
-            pnl_pct = self.calculate_pnl_pct(entry_price, current_price, position['side'])
 
-            logger.debug(f"{symbol}: Entry=${entry_price:.4f}, Current=${current_price:.4f}, PnL={pnl_pct:.2f}%")
+            # Calculate PnL with fees for accurate reporting
+            pnl_pct_raw = self.calculate_pnl_pct(entry_price, current_price, position['side'], include_fees=False)
+            pnl_pct_net = self.calculate_pnl_pct(entry_price, current_price, position['side'], include_fees=True)
+
+            logger.debug(f"{symbol}: Entry=${entry_price:.4f}, Current=${current_price:.4f}, PnL={pnl_pct_raw:.2f}% (net: {pnl_pct_net:.2f}%)")
 
             exit_reason = None
 
@@ -172,36 +206,50 @@ class PositionManager:
                 exit_reason = 'MAX_HOLD_TIME'
 
             if exit_reason:
+                # Mark as pending to prevent duplicate exits
+                self._pending_exits.add(trade_id)
+
                 exit_signal = {
                     'symbol': symbol,
                     'action': 'SELL',
                     'price': current_price,
                     'entry_price': entry_price,
                     'quantity': position['quantity'],
-                    'pnl_pct': pnl_pct,
-                    'pnl_usd': position['notional'] * (pnl_pct / 100),
+                    'pnl_pct': pnl_pct_raw,  # Report raw PnL
+                    'pnl_pct_net': pnl_pct_net,  # Net PnL after fees
+                    'pnl_usd': position['notional'] * (pnl_pct_net / 100),  # Use net for USD
                     'reason': exit_reason,
-                    'trade_id': position['id'],
+                    'trade_id': trade_id,
                     'timestamp': datetime.utcnow().isoformat()
                 }
                 exit_signals.append(exit_signal)
-                logger.info(f"🔴 EXIT SIGNAL: {symbol} - {exit_reason} - PnL: {pnl_pct:.2f}%")
+                logger.info(f"🔴 EXIT SIGNAL: {symbol} - {exit_reason} - PnL: {pnl_pct_raw:.2f}% (net: {pnl_pct_net:.2f}%)")
 
         return exit_signals
 
-    def close_position(self, trade_id: int, exit_price: float, pnl: float):
-        """Mark a position as closed in the database"""
-        self.db.update_trade_status(trade_id, 'CLOSED')
-        self.db.update_trade_pnl(trade_id, pnl)
+    def close_position(self, trade_id: int, exit_price: float, pnl: float) -> bool:
+        """
+        Mark a position as closed in the database (atomic operation).
 
-        # Update daily PnL
-        self.db.update_daily_pnl(pnl)
+        Returns:
+            True if position was closed, False if already closed (idempotent)
+        """
+        # Use atomic close to prevent duplicate exits on restart
+        was_closed = self.db.close_position_atomic(trade_id, pnl)
 
-        # Clean up trailing stop tracking
+        if not was_closed:
+            logger.warning(f"Position {trade_id} already closed (idempotent skip)")
+            # Clear from pending exits if it was there
+            self._pending_exits.discard(trade_id)
+            return False
+
+        # Clean up tracking
+        self._pending_exits.discard(trade_id)
         if trade_id in self.highest_prices:
             del self.highest_prices[trade_id]
 
         logger.info(f"Position {trade_id} closed. PnL: ${pnl:.2f}")
+        return True
 
     def get_position_summary(self) -> str:
         """Get a summary of all open positions"""

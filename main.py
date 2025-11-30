@@ -267,8 +267,12 @@ class ScalperBot:
             if settings.dry_run:
                 logger.info(f"🔶 [DRY_RUN] Would place SELL order for {quantity:.6f} {symbol}")
 
-                # Close position in database
-                self.position_manager.close_position(trade_id, exit_price, pnl_usd)
+                # Close position in database (atomic - returns False if already closed)
+                was_closed = self.position_manager.close_position(trade_id, exit_price, pnl_usd)
+                if not was_closed:
+                    logger.info(f"Position {trade_id} already closed - skipping notification")
+                    return
+
                 self.position_sizer.decrement_positions()
 
                 # Notify via Telegram
@@ -291,8 +295,12 @@ class ScalperBot:
                 order_id = order.get('id')
                 logger.info(f"✅ Exit order executed: {order_id}")
 
-                # Close position in database
-                self.position_manager.close_position(trade_id, exit_price, pnl_usd)
+                # Close position in database (atomic - returns False if already closed)
+                was_closed = self.position_manager.close_position(trade_id, exit_price, pnl_usd)
+                if not was_closed:
+                    logger.warning(f"Position {trade_id} already closed - order executed but DB unchanged")
+                    return
+
                 self.position_sizer.decrement_positions()
 
                 # Notify via Telegram
