@@ -203,3 +203,41 @@ class TelegramNotifier:
             f"Time: {datetime.utcnow().strftime('%H:%M:%S')} UTC"
         )
         await self.send_message(message)
+
+    async def notify_position_closed(
+        self,
+        symbol: str,
+        entry_price: float,
+        exit_price: float,
+        quantity: float,
+        pnl_pct: float,
+        pnl_usd: float,
+        reason: str,
+        is_dry_run: bool = False
+    ):
+        """Send position closed notification"""
+        # Determine emoji based on profit/loss
+        if pnl_pct >= 0:
+            result_emoji = "🎯" if reason == "TAKE_PROFIT" else "✅"
+            result_text = "PROFIT"
+        else:
+            result_emoji = "🛑" if reason == "STOP_LOSS" else "❌"
+            result_text = "LOSS"
+
+        mode_tag = " [DRY RUN]" if is_dry_run else ""
+
+        # Format reason nicely
+        reason_display = reason.replace("_", " ").title()
+
+        message = (
+            f"{result_emoji} <b>Position Closed{mode_tag}</b>\n\n"
+            f"Symbol: {symbol}\n"
+            f"Reason: {reason_display}\n"
+            f"Entry: ${entry_price:.4f}\n"
+            f"Exit: ${exit_price:.4f}\n"
+            f"Quantity: {quantity:.6f}\n"
+            f"Result: <b>{result_text}</b>\n"
+            f"PnL: {pnl_pct:+.2f}% (${pnl_usd:+.2f})\n"
+            f"Time: {datetime.utcnow().strftime('%H:%M:%S')} UTC"
+        )
+        await self.send_message(message)
