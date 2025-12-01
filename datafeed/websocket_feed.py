@@ -144,6 +144,14 @@ class MEXCWebSocketFeed:
             symbol = data.get('s', '')  # Symbol
             msg_data = data.get('d', {})  # Data payload
 
+            # Debug: log message count every 100 messages
+            if self.messages_received % 100 == 0:
+                logger.info(f"📨 WS messages received: {self.messages_received}")
+
+            # Debug: log kline messages
+            if 'kline' in channel.lower():
+                logger.info(f"📊 Kline received: {channel} - data keys: {list(msg_data.keys())}")
+
             if not channel or not msg_data:
                 return
 
