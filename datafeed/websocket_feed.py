@@ -33,10 +33,14 @@ class MEXCWebSocketFeed:
     def __init__(
         self,
         symbols: List[str],
-        on_kline: Optional[Callable] = None
+        on_kline: Optional[Callable] = None,
+        api_key: Optional[str] = None,
+        api_secret: Optional[str] = None
     ):
         self.symbols = symbols
         self.on_kline = on_kline
+        self.api_key = api_key
+        self.api_secret = api_secret
 
         self.ws_client = None
         self.running = False
@@ -119,7 +123,13 @@ class MEXCWebSocketFeed:
         """WebSocket thread function"""
         try:
             logger.info("🔌 Starting pymexc WebSocket client...")
-            self.ws_client = spot.WebSocket()
+            # Pass API credentials if available (may help with subscription blocks)
+            if self.api_key and self.api_secret:
+                logger.info("🔑 Using authenticated WebSocket connection")
+                self.ws_client = spot.WebSocket(api_key=self.api_key, api_secret=self.api_secret)
+            else:
+                logger.info("📡 Using public WebSocket connection")
+                self.ws_client = spot.WebSocket()
             self.connected = True
             self.connection_time = time.time()
 
@@ -202,13 +212,17 @@ class HybridDataFeed:
         candle_store,
         orderbook,
         symbols: List[str],
-        rest_poll_interval: int = 10
+        rest_poll_interval: int = 10,
+        api_key: Optional[str] = None,
+        api_secret: Optional[str] = None
     ):
         self.exchange = exchange
         self.candle_store = candle_store
         self.orderbook = orderbook
         self.symbols = symbols
         self.rest_poll_interval = rest_poll_interval
+        self.api_key = api_key
+        self.api_secret = api_secret
 
         self.ws_feed: Optional[MEXCWebSocketFeed] = None
         self.rest_poller_task: Optional[asyncio.Task] = None
@@ -331,7 +345,9 @@ class HybridDataFeed:
         if WEBSOCKETS_AVAILABLE:
             self.ws_feed = MEXCWebSocketFeed(
                 symbols=self.symbols,
-                on_kline=self._on_kline
+                on_kline=self._on_kline,
+                api_key=self.api_key,
+                api_secret=self.api_secret
             )
 
             # Start WebSocket

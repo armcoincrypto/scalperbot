@@ -67,7 +67,9 @@ class ScalperBot:
                 self.candle_store,
                 self.orderbook,
                 settings.trading_pairs,
-                settings.data_poll_interval
+                settings.data_poll_interval,
+                api_key=settings.mexc_api_key,
+                api_secret=settings.mexc_api_secret
             )
             self.poller = None  # Not used in WebSocket mode
         else:
