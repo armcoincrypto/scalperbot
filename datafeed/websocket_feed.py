@@ -285,6 +285,10 @@ class HybridDataFeed:
         self.last_ws_update: Dict[str, float] = {}
         self.ws_stale_threshold = 5.0  # seconds
 
+        # Track kline timestamps to detect candle closes (MEXC doesn't have is_closed)
+        self._last_kline_ts: Dict[str, int] = {}
+        self._last_kline_data: Dict[str, Dict] = {}
+
     async def _on_ticker(self, data: Dict):
         """Handle WebSocket ticker update"""
         symbol = data['symbol']
@@ -309,28 +313,39 @@ class HybridDataFeed:
     async def _on_kline(self, data: Dict):
         """Handle WebSocket kline update"""
         symbol = data['symbol']
+        current_ts = data['timestamp']
 
-        # Only add closed candles to avoid partial data
-        if data.get('is_closed', False):
-            self.candle_store.add_candle(
-                symbol,
-                data['timestamp'],
-                data['open'],
-                data['high'],
-                data['low'],
-                data['close'],
-                data['volume']
-            )
-            logger.debug(f"WS Kline: {symbol} closed candle added")
-        else:
-            # Update latest candle (real-time)
-            self.candle_store.update_latest(
-                symbol,
-                data['high'],
-                data['low'],
-                data['close'],
-                data['volume']
-            )
+        # MEXC doesn't provide is_closed, so detect by timestamp change
+        last_ts = self._last_kline_ts.get(symbol)
+
+        if last_ts is not None and current_ts != last_ts:
+            # New candle started = previous candle is closed
+            # Add the PREVIOUS candle (which is now complete)
+            prev_data = self._last_kline_data.get(symbol)
+            if prev_data:
+                self.candle_store.add_candle(
+                    symbol,
+                    prev_data['timestamp'],
+                    prev_data['open'],
+                    prev_data['high'],
+                    prev_data['low'],
+                    prev_data['close'],
+                    prev_data['volume']
+                )
+                logger.info(f"WS Kline: {symbol} candle closed @ ${prev_data['close']:.4f}")
+
+        # Update tracking for current candle
+        self._last_kline_ts[symbol] = current_ts
+        self._last_kline_data[symbol] = data
+
+        # Always update latest candle in store (real-time price)
+        self.candle_store.update_latest(
+            symbol,
+            data['high'],
+            data['low'],
+            data['close'],
+            data['volume']
+        )
 
         self.last_ws_update[symbol] = time.time()
 
