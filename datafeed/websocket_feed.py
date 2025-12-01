@@ -119,6 +119,57 @@ class MEXCWebSocketFeed:
         except Exception as e:
             logger.error(f"Error handling kline message: {e}", exc_info=True)
 
+    def _handle_deals(self, message):
+        """Handle deals/trade message from pymexc - aggregate into candles"""
+        try:
+            self.messages_received += 1
+            self.last_message_time = time.time()
+
+            if self.messages_received % 100 == 0:
+                logger.info(f"📨 WS deals messages received: {self.messages_received}")
+
+            # Extract trade data from message
+            if hasattr(message, 'symbol'):
+                symbol = self._format_symbol(message.symbol)
+                price = float(message.price) if hasattr(message, 'price') else float(message.p)
+                volume = float(message.quantity) if hasattr(message, 'quantity') else float(message.v)
+                trade_time = int(message.time) if hasattr(message, 'time') else int(time.time() * 1000)
+            elif isinstance(message, dict):
+                symbol = self._format_symbol(message.get('s', message.get('symbol', '')))
+                price = float(message.get('p', message.get('price', 0)))
+                volume = float(message.get('v', message.get('quantity', 0)))
+                trade_time = int(message.get('t', message.get('time', int(time.time() * 1000))))
+            else:
+                logger.warning(f"Unknown deals message format: {type(message)}")
+                return
+
+            # Log first few messages
+            if self.messages_received <= 3:
+                logger.info(f"📊 Trade: {symbol} @ ${price:.4f} vol={volume:.6f}")
+
+            # Build candle data from trade
+            candle_ts = (trade_time // 60000) * 60000  # Round to minute
+
+            kline_data = {
+                'symbol': symbol,
+                'timestamp': candle_ts,
+                'close': price,
+                'volume': volume,
+                'open': price,  # Will be updated properly in HybridDataFeed
+                'high': price,
+                'low': price,
+            }
+
+            # Call async handler
+            if self.on_kline and self._loop:
+                asyncio.run_coroutine_threadsafe(
+                    self.on_kline(kline_data),
+                    self._loop
+                )
+
+        except Exception as e:
+            logger.error(f"Error handling deals message: {e}", exc_info=True)
+
     def _ws_thread_func(self):
         """WebSocket thread function"""
         try:
@@ -133,10 +184,15 @@ class MEXCWebSocketFeed:
             self.connected = True
             self.connection_time = time.time()
 
-            # Subscribe to klines for each symbol
+            # Try deals stream first (may not be blocked like klines)
+            # We'll aggregate trades into candles
             for mexc_symbol in self.mexc_symbols:
-                logger.info(f"📡 Subscribing to kline stream: {mexc_symbol}")
-                self.ws_client.kline_stream(self._handle_kline, mexc_symbol, "Min1")
+                logger.info(f"📡 Subscribing to deals stream: {mexc_symbol}")
+                try:
+                    self.ws_client.deals_stream(self._handle_deals, mexc_symbol)
+                except Exception as e:
+                    logger.warning(f"Deals stream failed for {mexc_symbol}: {e}, trying kline...")
+                    self.ws_client.kline_stream(self._handle_kline, mexc_symbol, "Min1")
 
             logger.info(f"✅ WebSocket connected and subscribed to {len(self.mexc_symbols)} symbols")
 
@@ -233,44 +289,67 @@ class HybridDataFeed:
         self.last_ws_update: Dict[str, float] = {}
         self.ws_stale_threshold = 5.0  # seconds
 
-        # Track kline timestamps to detect candle closes
-        self._last_kline_ts: Dict[str, int] = {}
-        self._last_kline_data: Dict[str, Dict] = {}
+        # Track current candle being built from trades/klines
+        self._current_candle: Dict[str, Dict] = {}
 
     async def _on_kline(self, data: Dict):
-        """Handle WebSocket kline update"""
+        """Handle WebSocket kline/trade update - aggregates trades into candles"""
         symbol = data['symbol']
         current_ts = data['timestamp']
+        price = data['close']
+        volume = data.get('volume', 0)
+
+        # Initialize current candle if needed
+        if symbol not in self._current_candle:
+            self._current_candle[symbol] = {
+                'timestamp': current_ts,
+                'open': price,
+                'high': price,
+                'low': price,
+                'close': price,
+                'volume': volume
+            }
+
+        candle = self._current_candle[symbol]
 
         # Detect candle close by timestamp change
-        last_ts = self._last_kline_ts.get(symbol)
-
-        if last_ts is not None and current_ts != last_ts:
+        if current_ts != candle['timestamp']:
             # New candle started = previous candle is closed
-            prev_data = self._last_kline_data.get(symbol)
-            if prev_data:
-                self.candle_store.add_candle(
-                    symbol,
-                    prev_data['timestamp'],
-                    prev_data['open'],
-                    prev_data['high'],
-                    prev_data['low'],
-                    prev_data['close'],
-                    prev_data['volume']
-                )
-                logger.info(f"🕯️ {symbol} candle closed @ ${prev_data['close']:.4f}")
+            self.candle_store.add_candle(
+                symbol,
+                candle['timestamp'],
+                candle['open'],
+                candle['high'],
+                candle['low'],
+                candle['close'],
+                candle['volume']
+            )
+            logger.info(f"🕯️ {symbol} candle closed @ ${candle['close']:.4f}")
 
-        # Update tracking for current candle
-        self._last_kline_ts[symbol] = current_ts
-        self._last_kline_data[symbol] = data
+            # Start new candle
+            self._current_candle[symbol] = {
+                'timestamp': current_ts,
+                'open': price,
+                'high': price,
+                'low': price,
+                'close': price,
+                'volume': volume
+            }
+        else:
+            # Update current candle with new trade
+            candle['high'] = max(candle['high'], price)
+            candle['low'] = min(candle['low'], price)
+            candle['close'] = price
+            candle['volume'] += volume
 
         # Update latest candle in store (real-time price)
+        c = self._current_candle[symbol]
         self.candle_store.update_latest(
             symbol,
-            data['high'],
-            data['low'],
-            data['close'],
-            data['volume']
+            c['high'],
+            c['low'],
+            c['close'],
+            c['volume']
         )
 
         self.last_ws_update[symbol] = time.time()
