@@ -221,10 +221,16 @@ class MEXCWebSocketFeed:
                 await self.subscribe()
 
                 # Message loop
+                msg_count = 0
                 async for message in self.ws:
                     if not self.running:
                         break
+                    msg_count += 1
+                    if msg_count <= 5 or msg_count % 50 == 0:
+                        logger.info(f"📩 WS msg #{msg_count}: {message[:150] if len(message) > 150 else message}")
                     await self._handle_message(message)
+
+                logger.warning(f"⚠️ WS message loop ended after {msg_count} messages")
 
             except websockets.exceptions.ConnectionClosed as e:
                 logger.warning(f"⚠️ WebSocket connection closed: {e}")
