@@ -89,3 +89,15 @@ class RiskBreaker:
             'limit_pct': -self.daily_loss_limit_pct,
             'can_trade': not self.is_breaker_tripped
         }
+
+    def get_daily_pnl(self) -> tuple:
+        """Get daily PnL as (amount, percentage) tuple"""
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        daily_pnl = self.db.get_daily_pnl(today)
+
+        if self.starting_balance and self.starting_balance > 0:
+            pnl_pct = (daily_pnl / self.starting_balance) * 100
+        else:
+            pnl_pct = 0
+
+        return daily_pnl, pnl_pct
