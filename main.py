@@ -16,6 +16,7 @@ from datafeed.orderbook import OrderBook
 from datafeed.rest_poller import RESTPoller
 from strategies.momentum_breakout import MomentumBreakoutStrategy
 from exec.router import OrderRouter
+from exec.position_manager import PositionManager
 from ops.pos_size import PositionSizer
 from risk.breaker import RiskBreaker
 from notifications.telegram import TelegramNotifier
@@ -67,6 +68,14 @@ class ScalperBot:
         self.position_sizer = PositionSizer()
         self.risk_breaker = RiskBreaker(self.db)
 
+        # Position manager for exit logic (TP/SL)
+        self.position_manager = PositionManager(
+            db=self.db,
+            exchange=self.exchange,
+            take_profit_pct=getattr(settings, 'take_profit_pct', 1.5),
+            stop_loss_pct=getattr(settings, 'stop_loss_pct', 1.0)
+        )
+
         # Initialize Telegram notifier
         self.telegram = TelegramNotifier(
             bot_token=settings.telegram_bot_token,
@@ -104,6 +113,10 @@ class ScalperBot:
             self.usdt_balance = 1000.0
             self.risk_breaker.set_starting_balance(self.usdt_balance)
 
+        # Sync open positions from database
+        self.position_manager.sync_from_db()
+        logger.info(self.position_manager.get_position_summary())
+
         logger.info("Initialization complete")
 
         # Send Telegram startup notification
@@ -134,6 +147,13 @@ class ScalperBot:
                 # Display data summary
                 logger.info(self.candle_store.summary())
                 logger.info(self.orderbook.summary())
+                logger.info(self.position_manager.get_position_summary())
+
+                # Get current prices for exit checking
+                current_prices = self._get_current_prices()
+
+                # Check and execute exits (TP/SL)
+                await self._check_and_execute_exits(current_prices)
 
                 # Collect breakout data for status/early warnings
                 pairs_data = await self._collect_pairs_data()
@@ -148,8 +168,15 @@ class ScalperBot:
                 # Run strategy for all symbols
                 signals = self.strategy.run_for_all_symbols(settings.trading_pairs)
 
-                # Execute signals
+                # Execute signals (skip pairs with open positions)
                 for signal in signals:
+                    symbol = signal['symbol']
+
+                    # Skip if already have open position
+                    if self.position_manager.has_open_position(symbol):
+                        logger.info(f"Skipping {symbol} signal - already have open position")
+                        continue
+
                     # Notify signal via Telegram
                     await self.telegram.notify_signal(signal)
                     await self.execute_signal(signal)
@@ -244,6 +271,83 @@ class ScalperBot:
             pnl_pct=pnl_pct
         )
 
+    def _get_current_prices(self) -> dict:
+        """Get current prices for all trading pairs from candle store"""
+        prices = {}
+        for symbol in settings.trading_pairs:
+            try:
+                df = self.candle_store.get_candles(symbol, '5m', limit=1)
+                if not df.empty:
+                    prices[symbol] = df.iloc[-1]['close']
+            except Exception as e:
+                logger.debug(f"Could not get price for {symbol}: {e}")
+        return prices
+
+    async def _check_and_execute_exits(self, current_prices: dict):
+        """Check open positions for exit conditions and execute SELL orders"""
+        exits = self.position_manager.check_exits(current_prices)
+
+        for exit_info in exits:
+            symbol = exit_info['symbol']
+            position = exit_info['position']
+            current_price = exit_info['current_price']
+            reason = exit_info['reason']
+            pnl_pct = exit_info['pnl_pct']
+
+            logger.info(f"\n{'*'*60}")
+            logger.info(f"EXIT TRIGGERED: {symbol} - {reason}")
+            logger.info(f"Entry: {position['entry_price']:.4f} -> Exit: {current_price:.4f}")
+            logger.info(f"PnL: {pnl_pct:+.2f}%")
+            logger.info(f"{'*'*60}")
+
+            try:
+                # Close position in position manager
+                closed_pos = self.position_manager.close_position(symbol, current_price, reason)
+
+                if settings.dry_run:
+                    logger.info(f"[DRY_RUN] Would place SELL order for {position['quantity']:.6f} {symbol}")
+
+                    # Update database
+                    if position.get('trade_id'):
+                        self.db.update_trade_status(position['trade_id'], 'CLOSED')
+
+                    # Notify via Telegram
+                    await self.telegram.notify_order_executed(
+                        symbol=symbol,
+                        side='sell',
+                        price=current_price,
+                        quantity=position['quantity'],
+                        notional=current_price * position['quantity'],
+                        dry_run=True,
+                        pnl_pct=pnl_pct,
+                        exit_reason=reason
+                    )
+                else:
+                    # Place actual SELL order
+                    order = self.router.place_market_order(symbol, 'sell', position['quantity'])
+
+                    if order:
+                        if position.get('trade_id'):
+                            self.db.update_trade_status(position['trade_id'], 'CLOSED', order.get('id'))
+                        self.position_sizer.decrement_positions()
+
+                        await self.telegram.notify_order_executed(
+                            symbol=symbol,
+                            side='sell',
+                            price=current_price,
+                            quantity=position['quantity'],
+                            notional=current_price * position['quantity'],
+                            order_id=order.get('id'),
+                            dry_run=False,
+                            pnl_pct=pnl_pct,
+                            exit_reason=reason
+                        )
+                    else:
+                        logger.error(f"Failed to execute SELL order for {symbol}")
+
+            except Exception as e:
+                logger.error(f"Error executing exit for {symbol}: {e}", exc_info=True)
+
     async def execute_signal(self, signal: dict):
         """Execute a trading signal"""
         symbol = signal['symbol']
@@ -284,6 +388,17 @@ class ScalperBot:
                 logger.info(f"[DRY_RUN] Would place {action} order for {quantity:.6f} {symbol}")
                 self.db.update_trade_status(trade_id, 'DRY_RUN')
 
+                # Record open position for exit monitoring
+                if action == 'BUY':
+                    self.position_manager.open_position(
+                        symbol=symbol,
+                        entry_price=price,
+                        quantity=quantity,
+                        trade_id=trade_id,
+                        side='buy'
+                    )
+                    self.position_sizer.increment_positions()
+
                 # Notify dry run order via Telegram
                 await self.telegram.notify_order_executed(
                     symbol=symbol,
@@ -303,6 +418,17 @@ class ScalperBot:
                 order_id = order.get('id')
                 self.db.update_trade_status(trade_id, 'FILLED', order_id)
                 self.position_sizer.increment_positions()
+
+                # Record open position for exit monitoring
+                if action == 'BUY':
+                    self.position_manager.open_position(
+                        symbol=symbol,
+                        entry_price=price,
+                        quantity=quantity,
+                        trade_id=trade_id,
+                        side='buy'
+                    )
+
                 logger.info(f"Order executed successfully: {order_id}")
 
                 # Notify successful order via Telegram

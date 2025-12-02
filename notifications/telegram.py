@@ -135,12 +135,23 @@ class TelegramNotifier:
         quantity: float,
         notional: float,
         order_id: Optional[str] = None,
-        dry_run: bool = False
+        dry_run: bool = False,
+        pnl_pct: Optional[float] = None,
+        exit_reason: Optional[str] = None
     ):
         """Send order execution notification"""
         symbol_short = symbol.replace("/USDT", "")
         mode_tag = "[DRY_RUN] " if dry_run else ""
-        emoji = "" if side.upper() == "BUY" else ""
+
+        # Use different emoji for BUY vs SELL
+        if side.upper() == "BUY":
+            emoji = ""
+        else:
+            # Profit or loss emoji for SELL
+            if pnl_pct is not None and pnl_pct >= 0:
+                emoji = ""
+            else:
+                emoji = ""
 
         message = (
             f"<b>{emoji} {mode_tag}Order Executed</b>\n\n"
@@ -150,6 +161,15 @@ class TelegramNotifier:
             f"Quantity: <code>{quantity:.6f}</code>\n"
             f"Notional: <code>${notional:.2f}</code>\n"
         )
+
+        # Add PnL info for SELL orders
+        if side.upper() == "SELL" and pnl_pct is not None:
+            pnl_emoji = "" if pnl_pct >= 0 else ""
+            message += f"PnL: <code>{pnl_pct:+.2f}%</code> {pnl_emoji}\n"
+
+        # Add exit reason for SELL orders
+        if exit_reason:
+            message += f"Reason: <code>{exit_reason}</code>\n"
 
         if order_id:
             message += f"Order ID: <code>{order_id}</code>\n"
