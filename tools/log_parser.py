@@ -102,6 +102,9 @@ class LogParser:
         'green3': r'GREEN 3: (DISABLED|Volume_Z=([\d.-]+), threshold=([\d.]+), surge=(YES|NO))',
         'green4': r'GREEN 4: Price=([\d.]+), breakout_level=([\d.]+), breakout=(YES|NO)',
 
+        # Structured analyzer line: [ANALYZER] [SYMBOL][G1:P/F][G2:P/F][G3:P/F][G4:P/F][BL:xxx][GAP:xxx%]
+        'analyzer_line': r'\[ANALYZER\] \[(\w+/USDT)\]\[G1:(P|F)\]\[G2:(P|F)\]\[G3:(P|F)\]\[G4:(P|F)\]\[BL:([\d.]+)\]\[GAP:([\d.-]+)%\]',
+
         # Signal and order patterns
         'signal': r'🟢 SIGNAL GENERATED: (\w+/USDT) (BUY|SELL) @ ([\d.]+)',
         'order_executed': r'(🔶 \[DRY_RUN\]|✅) .*Order.*: (\w+/USDT).*side=(\w+).*price=([\d.]+)',
@@ -200,6 +203,56 @@ class LogParser:
                         self._process_filter_results(current_symbol, current_filters, current_cycle)
                         current_symbol = None
                         current_filters = {}
+
+                # Parse structured analyzer line (preferred over individual filter parsing)
+                analyzer_match = re.search(self.PATTERNS['analyzer_line'], line)
+                if analyzer_match:
+                    symbol = analyzer_match.group(1)
+                    g1_pass = analyzer_match.group(2) == 'P'
+                    g2_pass = analyzer_match.group(3) == 'P'
+                    g3_pass = analyzer_match.group(4) == 'P'
+                    g4_pass = analyzer_match.group(5) == 'P'
+                    breakout_level = float(analyzer_match.group(6))
+                    gap_pct = float(analyzer_match.group(7))
+
+                    # Update metrics directly from structured line
+                    metrics = self.symbol_metrics[symbol]
+                    metrics.symbol = symbol
+                    metrics.total_cycles += 1
+
+                    # Track filter results
+                    if g1_pass:
+                        metrics.green1_pass += 1
+                    else:
+                        metrics.green1_fail += 1
+                    if g2_pass:
+                        metrics.green2_pass += 1
+                    else:
+                        metrics.green2_fail += 1
+                    if g3_pass:
+                        metrics.green3_pass += 1
+                    else:
+                        metrics.green3_fail += 1
+                    if g4_pass:
+                        metrics.green4_pass += 1
+                    else:
+                        metrics.green4_fail += 1
+                        # Track gap for failed breakouts
+                        if gap_pct > 0:
+                            metrics.breakout_gaps.append(gap_pct)
+
+                    # Near-miss detection (3 of 4 passed)
+                    passed_count = sum([g1_pass, g2_pass, g3_pass, g4_pass])
+                    if passed_count == 3:
+                        metrics.near_miss_count += 1
+                        if not g1_pass:
+                            metrics.near_miss_blocking_filter['GREEN1'] += 1
+                        if not g2_pass:
+                            metrics.near_miss_blocking_filter['GREEN2'] += 1
+                        if not g3_pass:
+                            metrics.near_miss_blocking_filter['GREEN3'] += 1
+                        if not g4_pass:
+                            metrics.near_miss_blocking_filter['GREEN4'] += 1
 
                 # Check for errors
                 if re.search(self.PATTERNS['error'], line, re.IGNORECASE):

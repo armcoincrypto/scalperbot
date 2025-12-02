@@ -233,6 +233,32 @@ def generate_text_report(analysis: Dict[str, Any]) -> str:
 
     lines.append("")
 
+    # Performance Rankings
+    rankings = recommendations.get('rankings', {})
+    ranked_symbols = rankings.get('ranked_symbols', [])
+    if ranked_symbols:
+        lines.append("-" * 70)
+        lines.append("PERFORMANCE RANKINGS")
+        lines.append("-" * 70)
+        lines.append(f"{'Rank':<5} {'Symbol':<12} {'Score':<8} {'WinRate':<10} {'PF':<8} {'NearMiss':<10} {'Tag'}")
+        lines.append("-" * 70)
+        for i, s in enumerate(ranked_symbols, 1):
+            pf = s['profit_factor']
+            pf_str = f"{pf:.2f}" if isinstance(pf, (int, float)) else str(pf)
+            lines.append(
+                f"{i:<5} {s['symbol']:<12} {s['composite_score']:<8.1f} "
+                f"{s['win_rate']:<10.1f} {pf_str:<8} {s['near_miss_rate']:<10.1f} {s['tag']}"
+            )
+        lines.append("")
+
+        top = rankings.get('top_performers', [])
+        bottom = rankings.get('bottom_performers', [])
+        if top:
+            lines.append(f"TOP PERFORMERS: {', '.join(top)}")
+        if bottom:
+            lines.append(f"BOTTOM PERFORMERS: {', '.join(bottom)}")
+        lines.append("")
+
     # Action items
     action_items = recommendations.get('action_items', [])
     if action_items:
@@ -270,6 +296,19 @@ def print_terminal_summary(analysis: Dict[str, Any]):
     recommendations = analysis.get('recommendations', {})
     summary = recommendations.get('summary', {})
 
+    # Print rankings first
+    rankings = recommendations.get('rankings', {})
+    ranked_symbols = rankings.get('ranked_symbols', [])
+    if ranked_symbols:
+        print("\nPERFORMANCE RANKINGS:")
+        print(f"  {'Rank':<4} {'Symbol':<12} {'Score':<8} {'WinRate':<8} {'Tag'}")
+        for i, s in enumerate(ranked_symbols[:5], 1):  # Top 5 only in terminal
+            print(f"  {i:<4} {s['symbol']:<12} {s['composite_score']:<8.1f} {s['win_rate']:<8.1f} {s['tag']}")
+
+        top = rankings.get('top_performers', [])
+        if top:
+            print(f"\n  TOP PERFORMERS: {', '.join(top)}")
+
     aggressive = summary.get('aggressive_candidates', [])
     conservative = summary.get('conservative_symbols', [])
 
@@ -281,7 +320,7 @@ def print_terminal_summary(analysis: Dict[str, Any]):
         print(f"\nCONSERVATIVE: {', '.join(conservative)}")
         print("  Poor performance - consider tightening or removing")
 
-    if not aggressive and not conservative:
+    if not aggressive and not conservative and not ranked_symbols:
         print("\nNo significant recommendations - metrics within acceptable range")
 
     # Print action items

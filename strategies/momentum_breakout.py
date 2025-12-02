@@ -107,13 +107,14 @@ class MomentumBreakoutStrategy:
         msg = f"GREEN 3: Volume_Z={vol_z:.2f}, threshold={self.volume_threshold}, surge={'YES ✅' if surge else 'NO ❌'}"
         return surge, msg
 
-    def check_green4_breakout(self, df: pd.DataFrame) -> tuple[bool, str]:
+    def check_green4_breakout(self, df: pd.DataFrame) -> tuple[bool, str, dict]:
         """
         GREEN 4: Price breakout
         Current price > highest high of last N periods + buffer
+        Returns: (passed, message, details_dict)
         """
         if len(df) < self.breakout_period + 1:
-            return False, "GREEN 4: Not enough data for breakout calculation"
+            return False, "GREEN 4: Not enough data for breakout calculation", {}
 
         # Get highest high of last N periods (excluding current candle)
         lookback = df.iloc[-(self.breakout_period+1):-1]
@@ -127,8 +128,18 @@ class MomentumBreakoutStrategy:
 
         breakout = current_price > breakout_level
 
+        # Calculate gap percentage for analysis
+        gap_pct = ((breakout_level - current_price) / breakout_level) * 100 if breakout_level > 0 else 0
+
         msg = f"GREEN 4: Price={current_price:.4f}, breakout_level={breakout_level:.4f}, breakout={'YES ✅' if breakout else 'NO ❌'}"
-        return breakout, msg
+
+        details = {
+            'price': current_price,
+            'breakout_level': breakout_level,
+            'gap_pct': gap_pct
+        }
+
+        return breakout, msg, details
 
     def generate_signal(self, symbol: str) -> Optional[Dict[str, Any]]:
         """
@@ -152,7 +163,7 @@ class MomentumBreakoutStrategy:
         green1_pass, green1_msg = self.check_green1_trend(df)
         green2_pass, green2_msg = self.check_green2_bb_expansion(df)
         green3_pass, green3_msg = self.check_green3_volume_surge(df)
-        green4_pass, green4_msg = self.check_green4_breakout(df)
+        green4_pass, green4_msg, green4_details = self.check_green4_breakout(df)
 
         # Log results
         logger.info(f"\n{'='*60}")
@@ -161,6 +172,16 @@ class MomentumBreakoutStrategy:
         logger.info(f"  {green2_msg}")
         logger.info(f"  {green3_msg}")
         logger.info(f"  {green4_msg}")
+
+        # Structured logging line for analyzer compatibility
+        # Format: [SYMBOL][G1:P/F][G2:P/F][G3:P/F][G4:P/F][breakout_level][gap%]
+        g1 = 'P' if green1_pass else 'F'
+        g2 = 'P' if green2_pass else 'F'
+        g3 = 'P' if green3_pass else 'F'
+        g4 = 'P' if green4_pass else 'F'
+        bl = green4_details.get('breakout_level', 0)
+        gap = green4_details.get('gap_pct', 0)
+        logger.info(f"[ANALYZER] [{symbol}][G1:{g1}][G2:{g2}][G3:{g3}][G4:{g4}][BL:{bl:.4f}][GAP:{gap:.3f}%]")
 
         # All filters must pass
         all_pass = green1_pass and green2_pass and green3_pass and green4_pass
@@ -177,7 +198,8 @@ class MomentumBreakoutStrategy:
                     'green2': green2_msg,
                     'green3': green3_msg,
                     'green4': green4_msg
-                }
+                },
+                'breakout_details': green4_details
             }
             logger.info(f"🟢 SIGNAL GENERATED: {symbol} BUY @ {signal['price']:.4f}")
             logger.info(f"{'='*60}\n")

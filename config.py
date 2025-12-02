@@ -23,8 +23,11 @@ class Settings(BaseSettings):
     # Trading mode
     dry_run: bool = True
 
-    # Trading pairs
-    trading_pairs: List[str] = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT"]
+    # Trading pairs (10 pairs - major coins with good liquidity on MEXC)
+    trading_pairs: List[str] = [
+        "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "BCH/USDT",
+        "LTC/USDT", "XLM/USDT", "ADA/USDT", "TRX/USDT", "DOGE/USDT"
+    ]
 
     # Strategy parameters
     strategy_interval: int = 60  # Run strategy every N seconds

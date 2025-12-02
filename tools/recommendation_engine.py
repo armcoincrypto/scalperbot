@@ -105,6 +105,9 @@ class RecommendationEngine:
                     'confidence': sug.confidence,
                 })
 
+        # Generate performance rankings
+        rankings = self._rank_symbols_by_performance(recommendations, log_data, trade_data)
+
         return {
             'symbols': {
                 sym: self._recommendation_to_dict(rec)
@@ -123,6 +126,7 @@ class RecommendationEngine:
                     if r.tag == RecommendationTag.INSUFFICIENT_DATA
                 ],
             },
+            'rankings': rankings,
             'all_suggestions': all_suggestions,
             'action_items': self._generate_action_items(recommendations),
         }
@@ -375,6 +379,62 @@ class RecommendationEngine:
             )
 
         return actions
+
+    def _rank_symbols_by_performance(
+        self,
+        recommendations: Dict[str, SymbolRecommendation],
+        log_data: Dict[str, Any],
+        trade_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Rank symbols by composite performance score.
+        Score = WinRate*0.4 + ProfitFactor*0.3 + NearMissRate*0.2 + SignalRate*0.1
+        """
+        scores = []
+
+        for symbol, rec in recommendations.items():
+            if rec.tag == RecommendationTag.INSUFFICIENT_DATA:
+                continue
+
+            metrics = rec.metrics_summary
+            if not metrics:
+                continue
+
+            # Extract metrics (normalize to 0-100 scale)
+            win_rate = metrics.get('win_rate', 0)  # Already 0-100
+            profit_factor = min(metrics.get('profit_factor', 0), 10) * 10  # Cap at 10, scale to 0-100
+            near_miss_rate = min(metrics.get('near_miss_rate', 0), 50) * 2  # Cap at 50%, scale to 0-100
+            signal_count = metrics.get('signal_count', 0)
+            total_cycles = metrics.get('total_cycles', 1)
+            signal_rate = min((signal_count / max(total_cycles, 1)) * 1000, 100)  # Scale and cap
+
+            # Composite score: higher is better
+            composite = (
+                win_rate * 0.4 +
+                profit_factor * 0.3 +
+                near_miss_rate * 0.2 +
+                signal_rate * 0.1
+            )
+
+            scores.append({
+                'symbol': symbol,
+                'composite_score': round(composite, 2),
+                'win_rate': round(win_rate, 1),
+                'profit_factor': metrics.get('profit_factor', 0),
+                'near_miss_rate': round(metrics.get('near_miss_rate', 0), 1),
+                'signal_count': signal_count,
+                'total_trades': metrics.get('total_trades', 0),
+                'tag': rec.tag.value
+            })
+
+        # Sort by composite score descending
+        scores.sort(key=lambda x: x['composite_score'], reverse=True)
+
+        return {
+            'ranked_symbols': scores,
+            'top_performers': [s['symbol'] for s in scores[:3]] if len(scores) >= 3 else [s['symbol'] for s in scores],
+            'bottom_performers': [s['symbol'] for s in scores[-3:]] if len(scores) >= 3 else [],
+        }
 
     def _recommendation_to_dict(self, rec: SymbolRecommendation) -> Dict[str, Any]:
         """Convert recommendation to dictionary"""
