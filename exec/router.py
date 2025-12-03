@@ -34,11 +34,26 @@ class OrderRouter:
 
     def quantize_amount(self, amount: float, precision: int) -> float:
         """Quantize amount to exchange precision"""
+        if amount <= 0:
+            return 0.0
+
+        # Handle precision 0 (whole units only)
         if precision == 0:
+            # If amount < 1, we can't trade whole units - return the original
+            # Let validation catch if it's too small
+            if amount < 1:
+                logger.warning(f"Cannot quantize {amount} to whole units (precision=0)")
+                return amount
             return float(int(amount))
 
         multiplier = 10 ** precision
         quantized = int(amount * multiplier) / multiplier
+
+        # Safety: never return 0 if input was > 0
+        if quantized == 0 and amount > 0:
+            logger.warning(f"Quantization would return 0 for {amount} with precision {precision}, using original")
+            return amount
+
         return quantized
 
     def quantize_price(self, price: float, precision: int) -> float:
@@ -94,8 +109,11 @@ class OrderRouter:
             market_info = self.get_market_info(symbol)
             amount_precision = market_info.get('amount_precision', 8)
 
+            logger.debug(f"Market info for {symbol}: precision={amount_precision}, min_amount={market_info.get('min_amount')}")
+
             # Quantize amount
             quantized_amount = self.quantize_amount(quantity, amount_precision)
+            logger.debug(f"Quantity {quantity} -> quantized {quantized_amount} (precision={amount_precision})")
 
             # Get current price for validation
             mid_price = self.orderbook.get_mid_price(symbol)
