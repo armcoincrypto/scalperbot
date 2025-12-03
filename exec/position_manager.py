@@ -181,7 +181,8 @@ class PositionManager:
 
     def sync_from_db(self, verify_on_exchange: bool = False):
         """
-        Sync positions from database on startup
+        Sync positions from database on startup.
+        In LIVE mode, also imports any untracked positions from exchange.
 
         Args:
             verify_on_exchange: If True, verify positions exist on exchange (LIVE mode)
@@ -189,28 +190,30 @@ class PositionManager:
         try:
             open_trades = self.db.get_open_positions()
 
-            if not open_trades:
-                logger.info("No open positions in database")
-                return
-
-            # Get actual exchange positions for verification
+            # Get actual exchange positions
             exchange_positions = {}
+            exchange_prices = {}
             if verify_on_exchange:
                 try:
                     balance = self.exchange.fetch_balance()
-                    for symbol, info in balance.items():
-                        if isinstance(info, dict) and info.get('free', 0) > 0:
-                            exchange_positions[symbol] = info.get('free', 0)
-                    logger.info(f"Exchange positions fetched: {list(exchange_positions.keys())}")
+                    for currency, info in balance.items():
+                        if isinstance(info, dict):
+                            total = info.get('total', 0) or 0
+                            if total > 0 and currency not in ['USDT', 'USD']:
+                                exchange_positions[currency] = total
+                    logger.info(f"Exchange balances: {exchange_positions}")
                 except Exception as e:
                     logger.warning(f"Could not fetch exchange positions: {e}")
 
             synced_count = 0
             skipped_count = 0
+            db_tracked_currencies = set()
 
+            # First, sync positions from database
             for trade in open_trades:
                 symbol = trade['symbol']
                 base_currency = symbol.split('/')[0] if '/' in symbol else symbol
+                db_tracked_currencies.add(base_currency)
 
                 # In LIVE mode, verify position exists on exchange
                 if verify_on_exchange:
@@ -220,10 +223,19 @@ class PositionManager:
                             f"SKIPPING phantom position {symbol}: "
                             f"DB qty={trade['quantity']:.6f}, Exchange qty={exchange_qty:.6f}"
                         )
-                        # Mark as CLOSED in database to prevent future loading
                         self.db.update_trade_status(trade['id'], 'PHANTOM_CLOSED')
                         skipped_count += 1
                         continue
+
+                    # If exchange has MORE than DB, update DB quantity to match
+                    if exchange_qty > trade['quantity'] * 1.1:  # More than 10% extra
+                        logger.warning(
+                            f"Exchange has MORE {symbol} than DB tracks! "
+                            f"DB: {trade['quantity']:.6f}, Exchange: {exchange_qty:.6f}"
+                        )
+                        logger.info(f"Updating DB quantity to match exchange: {exchange_qty:.6f}")
+                        # Update the trade quantity in position tracking
+                        trade['quantity'] = exchange_qty
 
                 self.positions[symbol] = {
                     'symbol': symbol,
@@ -237,9 +249,63 @@ class PositionManager:
                 self.high_water_marks[symbol] = trade['price']
                 synced_count += 1
 
+            # In LIVE mode, import any untracked positions from exchange
+            if verify_on_exchange:
+                imported_count = 0
+                for currency, qty in exchange_positions.items():
+                    if currency in db_tracked_currencies:
+                        continue  # Already tracked
+
+                    symbol = f"{currency}/USDT"
+                    try:
+                        # Get current price
+                        ticker = self.exchange.fetch_ticker(symbol)
+                        price = ticker.get('last', 0)
+                        value_usd = qty * price if price else 0
+
+                        if value_usd < 1:  # Skip dust positions
+                            continue
+
+                        logger.warning(f"UNTRACKED POSITION FOUND: {symbol} = {qty:.6f} (${value_usd:.2f})")
+                        logger.info(f"Auto-importing {symbol} to database...")
+
+                        # Import to database
+                        notional = qty * price
+                        trade_id = self.db.log_trade(
+                            symbol=symbol,
+                            side='buy',
+                            price=price,
+                            quantity=qty,
+                            notional=notional,
+                            signal_reason='AUTO_IMPORTED_ON_STARTUP',
+                            order_id=f'IMPORT_{currency}_{datetime.now().strftime("%Y%m%d%H%M%S")}',
+                            status='OPEN'
+                        )
+
+                        # Add to position manager
+                        self.positions[symbol] = {
+                            'symbol': symbol,
+                            'entry_price': price,
+                            'quantity': qty,
+                            'trade_id': trade_id,
+                            'side': 'buy',
+                            'entry_time': datetime.now(timezone.utc),
+                            'high_price': price
+                        }
+                        self.high_water_marks[symbol] = price
+                        imported_count += 1
+                        logger.info(f"✅ Imported {symbol}: {qty:.6f} @ ${price:.4f} -> Trade ID: {trade_id}")
+
+                    except Exception as e:
+                        logger.warning(f"Could not import {symbol}: {e}")
+
+                if imported_count > 0:
+                    logger.info(f"Auto-imported {imported_count} untracked positions from exchange")
+
             logger.info(f"Synced {synced_count} open positions from database")
             if skipped_count > 0:
                 logger.warning(f"Skipped {skipped_count} phantom positions (not found on exchange)")
+
         except Exception as e:
             logger.warning(f"Could not sync positions from DB: {e}")
 
