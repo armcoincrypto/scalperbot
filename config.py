@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     # Risk management
     daily_loss_limit_pct: float = 3.0  # Stop trading if down 3% for the day
 
+    # Exit settings (Take Profit / Stop Loss)
+    take_profit_pct: float = 1.5  # Close position when profit reaches X%
+    stop_loss_pct: float = 1.0  # Close position when loss reaches X%
+
     # Database
     database_path: str = "scalperbot/trades.db"
 
