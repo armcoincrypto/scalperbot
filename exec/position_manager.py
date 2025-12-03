@@ -225,9 +225,10 @@ class PositionManager:
 
                 # If multiple trades for same symbol, keep only the best match
                 if len(trades) > 1:
+                    qty_str = f"{exchange_qty:.6f}" if exchange_qty else "N/A"
                     logger.warning(
                         f"Found {len(trades)} duplicate DB entries for {symbol}! "
-                        f"Exchange qty: {exchange_qty:.6f if exchange_qty else 'N/A'}"
+                        f"Exchange qty: {qty_str}"
                     )
 
                     if verify_on_exchange and exchange_qty > 0:
