@@ -192,7 +192,6 @@ class PositionManager:
 
             # Get actual exchange positions
             exchange_positions = {}
-            exchange_prices = {}
             if verify_on_exchange:
                 try:
                     balance = self.exchange.fetch_balance()
@@ -205,19 +204,68 @@ class PositionManager:
                 except Exception as e:
                     logger.warning(f"Could not fetch exchange positions: {e}")
 
+            # Group trades by symbol - critical for detecting duplicates
+            trades_by_symbol: Dict[str, List[Dict]] = {}
+            for trade in open_trades:
+                symbol = trade['symbol']
+                if symbol not in trades_by_symbol:
+                    trades_by_symbol[symbol] = []
+                trades_by_symbol[symbol].append(trade)
+
             synced_count = 0
             skipped_count = 0
             db_tracked_currencies = set()
 
-            # First, sync positions from database
-            for trade in open_trades:
-                symbol = trade['symbol']
+            # Process each symbol - only keep ONE trade per symbol
+            for symbol, trades in trades_by_symbol.items():
                 base_currency = symbol.split('/')[0] if '/' in symbol else symbol
                 db_tracked_currencies.add(base_currency)
 
+                exchange_qty = exchange_positions.get(base_currency, 0) if verify_on_exchange else None
+
+                # If multiple trades for same symbol, keep only the best match
+                if len(trades) > 1:
+                    logger.warning(
+                        f"Found {len(trades)} duplicate DB entries for {symbol}! "
+                        f"Exchange qty: {exchange_qty:.6f if exchange_qty else 'N/A'}"
+                    )
+
+                    if verify_on_exchange and exchange_qty > 0:
+                        # Find the trade with quantity closest to exchange
+                        best_trade = min(trades, key=lambda t: abs(t['quantity'] - exchange_qty))
+                        logger.info(
+                            f"Keeping trade ID {best_trade['id']} (qty={best_trade['quantity']:.6f}) "
+                            f"as best match for exchange qty {exchange_qty:.6f}"
+                        )
+
+                        # Mark all other trades as phantom
+                        for trade in trades:
+                            if trade['id'] != best_trade['id']:
+                                logger.warning(
+                                    f"Marking duplicate trade ID {trade['id']} as PHANTOM_CLOSED "
+                                    f"(qty={trade['quantity']:.6f})"
+                                )
+                                self.db.update_trade_status(trade['id'], 'PHANTOM_CLOSED')
+                                skipped_count += 1
+
+                        trades = [best_trade]
+                    else:
+                        # No exchange data - keep the most recent trade
+                        best_trade = trades[0]  # Already sorted by created_at DESC
+                        for trade in trades[1:]:
+                            logger.warning(
+                                f"Marking duplicate trade ID {trade['id']} as PHANTOM_CLOSED "
+                                f"(keeping ID {best_trade['id']})"
+                            )
+                            self.db.update_trade_status(trade['id'], 'PHANTOM_CLOSED')
+                            skipped_count += 1
+                        trades = [best_trade]
+
+                # Now process the single remaining trade for this symbol
+                trade = trades[0]
+
                 # In LIVE mode, verify position exists on exchange
                 if verify_on_exchange:
-                    exchange_qty = exchange_positions.get(base_currency, 0)
                     if exchange_qty < trade['quantity'] * 0.9:  # Allow 10% tolerance
                         logger.warning(
                             f"SKIPPING phantom position {symbol}: "
@@ -227,14 +275,13 @@ class PositionManager:
                         skipped_count += 1
                         continue
 
-                    # If exchange has MORE than DB, update DB quantity to match
+                    # If exchange has MORE than DB, update quantity in memory to match
                     if exchange_qty > trade['quantity'] * 1.1:  # More than 10% extra
                         logger.warning(
                             f"Exchange has MORE {symbol} than DB tracks! "
                             f"DB: {trade['quantity']:.6f}, Exchange: {exchange_qty:.6f}"
                         )
-                        logger.info(f"Updating DB quantity to match exchange: {exchange_qty:.6f}")
-                        # Update the trade quantity in position tracking
+                        logger.info(f"Using exchange quantity: {exchange_qty:.6f}")
                         trade['quantity'] = exchange_qty
 
                 self.positions[symbol] = {
@@ -294,7 +341,7 @@ class PositionManager:
                         }
                         self.high_water_marks[symbol] = price
                         imported_count += 1
-                        logger.info(f"✅ Imported {symbol}: {qty:.6f} @ ${price:.4f} -> Trade ID: {trade_id}")
+                        logger.info(f"Imported {symbol}: {qty:.6f} @ ${price:.4f} -> Trade ID: {trade_id}")
 
                     except Exception as e:
                         logger.warning(f"Could not import {symbol}: {e}")
@@ -304,7 +351,7 @@ class PositionManager:
 
             logger.info(f"Synced {synced_count} open positions from database")
             if skipped_count > 0:
-                logger.warning(f"Skipped {skipped_count} phantom positions (not found on exchange)")
+                logger.warning(f"Cleaned up {skipped_count} phantom/duplicate positions")
 
         except Exception as e:
             logger.warning(f"Could not sync positions from DB: {e}")
