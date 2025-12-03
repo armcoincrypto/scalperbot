@@ -105,15 +105,12 @@ class OrderRouter:
         side: 'buy' or 'sell'
         """
         try:
-            # Get market info
+            # Get market info for validation
             market_info = self.get_market_info(symbol)
-            amount_precision = market_info.get('amount_precision', 8)
 
-            logger.debug(f"Market info for {symbol}: precision={amount_precision}, min_amount={market_info.get('min_amount')}")
-
-            # Quantize amount
-            quantized_amount = self.quantize_amount(quantity, amount_precision)
-            logger.debug(f"Quantity {quantity} -> quantized {quantized_amount} (precision={amount_precision})")
+            # Use CCXT's built-in precision formatting (handles all edge cases)
+            formatted_amount = self.exchange.format_amount(symbol, quantity)
+            logger.info(f"Quantity {quantity} -> formatted {formatted_amount} for {symbol}")
 
             # Get current price for validation
             mid_price = self.orderbook.get_mid_price(symbol)
@@ -122,14 +119,14 @@ class OrderRouter:
                 return None
 
             # Validate order
-            is_valid, reason = self.validate_order(symbol, quantized_amount, mid_price)
+            is_valid, reason = self.validate_order(symbol, formatted_amount, mid_price)
             if not is_valid:
                 logger.error(f"❌ Order validation failed: {reason}")
                 return None
 
             # Place market order
-            logger.info(f"🔵 Placing market {side} order: {quantized_amount} {symbol}")
-            order = self.exchange.create_market_order(symbol, side, quantized_amount)
+            logger.info(f"🔵 Placing market {side} order: {formatted_amount} {symbol}")
+            order = self.exchange.create_market_order(symbol, side, formatted_amount)
 
             logger.info(f"✅ Market order placed: {order.get('id')}")
             return order
@@ -150,24 +147,21 @@ class OrderRouter:
         side: 'buy' or 'sell'
         """
         try:
-            # Get market info
-            market_info = self.get_market_info(symbol)
-            amount_precision = market_info.get('amount_precision', 8)
-            price_precision = market_info.get('price_precision', 8)
+            # Use CCXT's built-in precision formatting
+            formatted_amount = self.exchange.format_amount(symbol, quantity)
+            formatted_price = self.exchange.format_price(symbol, price)
 
-            # Quantize
-            quantized_amount = self.quantize_amount(quantity, amount_precision)
-            quantized_price = self.quantize_price(price, price_precision)
+            logger.info(f"Limit order: qty {quantity} -> {formatted_amount}, price {price} -> {formatted_price}")
 
             # Validate
-            is_valid, reason = self.validate_order(symbol, quantized_amount, quantized_price)
+            is_valid, reason = self.validate_order(symbol, formatted_amount, formatted_price)
             if not is_valid:
                 logger.error(f"❌ Order validation failed: {reason}")
                 return None
 
             # Place limit order
-            logger.info(f"🔵 Placing limit {side} order: {quantized_amount} {symbol} @ {quantized_price}")
-            order = self.exchange.create_limit_order(symbol, side, quantized_amount, quantized_price)
+            logger.info(f"🔵 Placing limit {side} order: {formatted_amount} {symbol} @ {formatted_price}")
+            order = self.exchange.create_limit_order(symbol, side, formatted_amount, formatted_price)
 
             logger.info(f"✅ Limit order placed: {order.get('id')}")
             return order

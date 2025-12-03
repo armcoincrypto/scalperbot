@@ -185,3 +185,28 @@ class MEXCAdapter:
         except Exception as e:
             logger.error(f"Error fetching market info for {symbol}: {e}")
             return {}
+
+    def format_amount(self, symbol: str, amount: float) -> float:
+        """
+        Format amount to exchange precision using CCXT's built-in method.
+        This handles all edge cases correctly for each symbol.
+        """
+        try:
+            self.exchange.load_markets()
+            formatted = self.exchange.amount_to_precision(symbol, amount)
+            return float(formatted)
+        except Exception as e:
+            logger.warning(f"Could not format amount for {symbol}: {e}, using original")
+            return amount
+
+    def format_price(self, symbol: str, price: float) -> float:
+        """
+        Format price to exchange precision using CCXT's built-in method.
+        """
+        try:
+            self.exchange.load_markets()
+            formatted = self.exchange.price_to_precision(symbol, price)
+            return float(formatted)
+        except Exception as e:
+            logger.warning(f"Could not format price for {symbol}: {e}, using original")
+            return price
