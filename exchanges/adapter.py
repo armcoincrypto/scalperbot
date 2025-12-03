@@ -191,10 +191,21 @@ class MEXCAdapter:
         Format amount to exchange precision using CCXT's built-in method.
         This handles all edge cases correctly for each symbol.
         """
+        if amount <= 0:
+            return 0.0
+
         try:
             self.exchange.load_markets()
             formatted = self.exchange.amount_to_precision(symbol, amount)
-            return float(formatted)
+            result = float(formatted)
+
+            # Safety: never return 0 if input was > 0
+            if result == 0 and amount > 0:
+                logger.warning(f"CCXT formatted {amount} to 0 for {symbol}, using original amount")
+                return amount
+
+            logger.debug(f"Formatted amount for {symbol}: {amount} -> {result}")
+            return result
         except Exception as e:
             logger.warning(f"Could not format amount for {symbol}: {e}, using original")
             return amount
@@ -203,10 +214,20 @@ class MEXCAdapter:
         """
         Format price to exchange precision using CCXT's built-in method.
         """
+        if price <= 0:
+            return 0.0
+
         try:
             self.exchange.load_markets()
             formatted = self.exchange.price_to_precision(symbol, price)
-            return float(formatted)
+            result = float(formatted)
+
+            # Safety: never return 0 if input was > 0
+            if result == 0 and price > 0:
+                logger.warning(f"CCXT formatted price {price} to 0 for {symbol}, using original")
+                return price
+
+            return result
         except Exception as e:
             logger.warning(f"Could not format price for {symbol}: {e}, using original")
             return price
