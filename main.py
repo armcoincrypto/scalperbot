@@ -119,6 +119,12 @@ class ScalperBot:
         if verify_on_exchange:
             logger.info("LIVE MODE: Verifying positions exist on exchange before loading...")
         self.position_manager.sync_from_db(verify_on_exchange=verify_on_exchange)
+
+        # Sync position_sizer count with loaded positions
+        loaded_positions = len(self.position_manager.positions)
+        self.position_sizer.current_positions = loaded_positions
+        logger.info(f"Position sizer synced: {loaded_positions} positions")
+
         logger.info(self.position_manager.get_position_summary())
 
         logger.info("Initialization complete")
