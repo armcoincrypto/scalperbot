@@ -8,12 +8,20 @@ Handles all Telegram messaging including:
 - Early warning alerts (price near breakout)
 """
 import asyncio
+import html
 import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+def escape_html(text: str) -> str:
+    """Escape HTML special characters to prevent parse errors"""
+    if text is None:
+        return ""
+    return html.escape(str(text))
 
 
 class TelegramNotifier:
@@ -28,7 +36,8 @@ class TelegramNotifier:
         status_interval_min: int = 60,
         early_warn_pct: float = 0.1,
         early_warn_cooldown_min: int = 60,
-        status_enabled: bool = True
+        status_enabled: bool = True,
+        early_warn_enabled: bool = True
     ):
         self.bot_token = bot_token
         self.chat_id = chat_id
@@ -36,6 +45,7 @@ class TelegramNotifier:
         self.early_warn_pct = early_warn_pct
         self.early_warn_cooldown_min = early_warn_cooldown_min
         self.status_enabled = status_enabled
+        self.early_warn_enabled = early_warn_enabled
 
         self.enabled = bool(bot_token and chat_id)
         self.base_url = f"https://api.telegram.org/bot{bot_token}"
@@ -167,9 +177,9 @@ class TelegramNotifier:
             pnl_emoji = "" if pnl_pct >= 0 else ""
             message += f"PnL: <code>{pnl_pct:+.2f}%</code> {pnl_emoji}\n"
 
-        # Add exit reason for SELL orders
+        # Add exit reason for SELL orders (escape HTML to prevent parse errors with <= or >=)
         if exit_reason:
-            message += f"Reason: <code>{exit_reason}</code>\n"
+            message += f"Reason: <code>{escape_html(exit_reason)}</code>\n"
 
         if order_id:
             message += f"Order ID: <code>{order_id}</code>\n"
@@ -274,7 +284,7 @@ class TelegramNotifier:
         Send early warning when price is within threshold of breakout
         Respects cooldown to avoid spam
         """
-        if not self.status_enabled:
+        if not self.status_enabled or not self.early_warn_enabled:
             return
 
         now = datetime.now(timezone.utc)

@@ -83,7 +83,8 @@ class ScalperBot:
             status_interval_min=settings.status_interval_min,
             early_warn_pct=settings.early_warn_pct,
             early_warn_cooldown_min=settings.early_warn_cooldown_min,
-            status_enabled=settings.status_enabled
+            status_enabled=settings.status_enabled,
+            early_warn_enabled=getattr(settings, 'early_warn_enabled', False)
         )
 
         if self.telegram.enabled:

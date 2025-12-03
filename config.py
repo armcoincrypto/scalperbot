@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     # Telegram Status Reports
     status_enabled: bool = True  # Enable hourly status reports
     status_interval_min: int = 60  # Send status every N minutes
+    early_warn_enabled: bool = False  # Enable early warning alerts (disabled by default)
     early_warn_pct: float = 0.1  # Alert when price within X% of breakout
     early_warn_cooldown_min: int = 60  # One early warning per symbol per N minutes
 
