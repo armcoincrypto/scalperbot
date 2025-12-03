@@ -179,12 +179,52 @@ class PositionManager:
 
         return exits
 
-    def sync_from_db(self):
-        """Sync positions from database on startup"""
+    def sync_from_db(self, verify_on_exchange: bool = False):
+        """
+        Sync positions from database on startup
+
+        Args:
+            verify_on_exchange: If True, verify positions exist on exchange (LIVE mode)
+        """
         try:
             open_trades = self.db.get_open_positions()
+
+            if not open_trades:
+                logger.info("No open positions in database")
+                return
+
+            # Get actual exchange positions for verification
+            exchange_positions = {}
+            if verify_on_exchange:
+                try:
+                    balance = self.exchange.fetch_balance()
+                    for symbol, info in balance.items():
+                        if isinstance(info, dict) and info.get('free', 0) > 0:
+                            exchange_positions[symbol] = info.get('free', 0)
+                    logger.info(f"Exchange positions fetched: {list(exchange_positions.keys())}")
+                except Exception as e:
+                    logger.warning(f"Could not fetch exchange positions: {e}")
+
+            synced_count = 0
+            skipped_count = 0
+
             for trade in open_trades:
                 symbol = trade['symbol']
+                base_currency = symbol.split('/')[0] if '/' in symbol else symbol
+
+                # In LIVE mode, verify position exists on exchange
+                if verify_on_exchange:
+                    exchange_qty = exchange_positions.get(base_currency, 0)
+                    if exchange_qty < trade['quantity'] * 0.9:  # Allow 10% tolerance
+                        logger.warning(
+                            f"SKIPPING phantom position {symbol}: "
+                            f"DB qty={trade['quantity']:.6f}, Exchange qty={exchange_qty:.6f}"
+                        )
+                        # Mark as CLOSED in database to prevent future loading
+                        self.db.update_trade_status(trade['id'], 'PHANTOM_CLOSED')
+                        skipped_count += 1
+                        continue
+
                 self.positions[symbol] = {
                     'symbol': symbol,
                     'entry_price': trade['price'],
@@ -195,8 +235,11 @@ class PositionManager:
                     'high_price': trade['price']
                 }
                 self.high_water_marks[symbol] = trade['price']
+                synced_count += 1
 
-            logger.info(f"Synced {len(self.positions)} open positions from database")
+            logger.info(f"Synced {synced_count} open positions from database")
+            if skipped_count > 0:
+                logger.warning(f"Skipped {skipped_count} phantom positions (not found on exchange)")
         except Exception as e:
             logger.warning(f"Could not sync positions from DB: {e}")
 

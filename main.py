@@ -114,7 +114,11 @@ class ScalperBot:
             self.risk_breaker.set_starting_balance(self.usdt_balance)
 
         # Sync open positions from database
-        self.position_manager.sync_from_db()
+        # In LIVE mode, verify positions actually exist on exchange to avoid phantom positions
+        verify_on_exchange = not settings.dry_run
+        if verify_on_exchange:
+            logger.info("LIVE MODE: Verifying positions exist on exchange before loading...")
+        self.position_manager.sync_from_db(verify_on_exchange=verify_on_exchange)
         logger.info(self.position_manager.get_position_summary())
 
         logger.info("Initialization complete")
