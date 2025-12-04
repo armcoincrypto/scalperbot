@@ -36,8 +36,8 @@ class Settings(BaseSettings):
     # GREEN filter thresholds (momentum breakout strategy)
     green2_bb_period: int = 20
     green2_bb_std: float = 2.0
-    green3_volume_threshold: float = 1.5  # Volume Z-score threshold
-    green3_enabled: bool = False  # Disabled by default (market volume too low)
+    green3_volume_threshold: float = 1.2  # Volume Z-score threshold (lower = more signals)
+    green3_enabled: bool = True  # Enable volume confirmation filter
     green4_breakout_period: int = 10
     green4_breakout_buffer_bps: int = 10  # Basis points (0.1%)
 
@@ -45,12 +45,26 @@ class Settings(BaseSettings):
     position_size_usd: float = 100.0  # Default position size
     max_positions: int = 3
 
+    # Per-symbol minimum notional (to avoid failed orders)
+    # Set higher for expensive coins, lower for cheap ones
+    per_symbol_min_notional: dict = {
+        "BTC/USDT": 200.0,
+        "ETH/USDT": 100.0,
+        "default": 25.0
+    }
+
     # Risk management
     daily_loss_limit_pct: float = 3.0  # Stop trading if down 3% for the day
 
     # Exit settings (Take Profit / Stop Loss)
-    take_profit_pct: float = 1.5  # Close position when profit reaches X%
+    take_profit_pct: float = 2.0  # Close position when profit reaches X% (was 1.5%)
     stop_loss_pct: float = 1.0  # Close position when loss reaches X%
+
+    # Advanced exit settings
+    max_hold_hours: float = 6.0  # Close position after N hours (0 = disabled)
+    trailing_stop_enabled: bool = True  # Enable trailing stop
+    trailing_start_pct: float = 0.5  # Start trailing after +X% profit
+    trailing_offset_pct: float = 0.3  # Trail by X% from high
 
     # Database
     database_path: str = "scalperbot/trades.db"

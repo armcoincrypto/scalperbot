@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 class PositionSizer:
     """
     Calculates position sizes for trades
-    - Fixed notional sizing
-    - Risk-based sizing (future)
+    - Fixed notional sizing with per-symbol minimums
+    - Avoids failed orders for expensive coins
     - Max position limits
     """
 
@@ -21,6 +21,19 @@ class PositionSizer:
         self.default_size_usd = default_size_usd or settings.position_size_usd
         self.max_positions = max_positions or settings.max_positions
         self.current_positions = 0
+
+        # Per-symbol minimum notional to avoid failed orders
+        self.per_symbol_min_notional = getattr(settings, 'per_symbol_min_notional', {
+            "BTC/USDT": 200.0,
+            "ETH/USDT": 100.0,
+            "default": 25.0
+        })
+
+    def get_min_notional(self, symbol: str) -> float:
+        """Get minimum notional for a symbol"""
+        if symbol in self.per_symbol_min_notional:
+            return self.per_symbol_min_notional[symbol]
+        return self.per_symbol_min_notional.get('default', self.default_size_usd)
 
     def calculate_size(
         self,
@@ -49,19 +62,27 @@ class PositionSizer:
                 'reason': 'Max positions reached'
             }
 
-        # Use default fixed size
-        notional_usd = self.default_size_usd
+        # Get minimum notional for this symbol
+        min_notional = self.get_min_notional(symbol)
+
+        # Use larger of default size and minimum notional
+        notional_usd = max(self.default_size_usd, min_notional)
 
         # If balance provided, limit to available capital
         if balance_usd is not None:
             if balance_usd < notional_usd:
-                logger.warning(f"⚠️ Insufficient balance: ${balance_usd:.2f} < ${notional_usd:.2f}")
-                return {
-                    'quantity': 0,
-                    'notional_usd': 0,
-                    'can_trade': False,
-                    'reason': 'Insufficient balance'
-                }
+                # Check if we can at least do the minimum
+                if balance_usd >= min_notional:
+                    notional_usd = min_notional
+                    logger.info(f"Reduced position to minimum notional: ${notional_usd:.2f}")
+                else:
+                    logger.warning(f"⚠️ Insufficient balance: ${balance_usd:.2f} < ${min_notional:.2f} (min for {symbol})")
+                    return {
+                        'quantity': 0,
+                        'notional_usd': 0,
+                        'can_trade': False,
+                        'reason': f'Insufficient balance (need ${min_notional:.2f} min for {symbol})'
+                    }
 
         # Calculate quantity in base currency
         quantity = notional_usd / price

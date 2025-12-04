@@ -314,39 +314,50 @@ class ScalperBot:
                 # Close position in position manager
                 closed_pos = self.position_manager.close_position(symbol, current_price, reason)
 
-                if settings.dry_run:
-                    logger.info(f"[DRY_RUN] Would place SELL order for {position['quantity']:.6f} {symbol}")
+                # Calculate actual PnL in USD
+                entry_price = position['entry_price']
+                quantity = position['quantity']
+                pnl_usd = (current_price - entry_price) * quantity
 
-                    # Update database
+                if settings.dry_run:
+                    logger.info(f"[DRY_RUN] Would place SELL order for {quantity:.6f} {symbol}")
+
+                    # Update database with status AND PnL
                     if position.get('trade_id'):
                         self.db.update_trade_status(position['trade_id'], 'CLOSED')
+                        self.db.update_trade_pnl(position['trade_id'], pnl_usd)
+                        self.db.update_daily_pnl(pnl_usd)
+                        logger.info(f"PnL recorded: ${pnl_usd:.4f} ({pnl_pct:+.2f}%)")
 
                     # Notify via Telegram
                     await self.telegram.notify_order_executed(
                         symbol=symbol,
                         side='sell',
                         price=current_price,
-                        quantity=position['quantity'],
-                        notional=current_price * position['quantity'],
+                        quantity=quantity,
+                        notional=current_price * quantity,
                         dry_run=True,
                         pnl_pct=pnl_pct,
                         exit_reason=reason
                     )
                 else:
                     # Place actual SELL order
-                    order = self.router.place_market_order(symbol, 'sell', position['quantity'])
+                    order = self.router.place_market_order(symbol, 'sell', quantity)
 
                     if order:
                         if position.get('trade_id'):
                             self.db.update_trade_status(position['trade_id'], 'CLOSED', order.get('id'))
+                            self.db.update_trade_pnl(position['trade_id'], pnl_usd)
+                            self.db.update_daily_pnl(pnl_usd)
+                            logger.info(f"PnL recorded: ${pnl_usd:.4f} ({pnl_pct:+.2f}%)")
                         self.position_sizer.decrement_positions()
 
                         await self.telegram.notify_order_executed(
                             symbol=symbol,
                             side='sell',
                             price=current_price,
-                            quantity=position['quantity'],
-                            notional=current_price * position['quantity'],
+                            quantity=quantity,
+                            notional=current_price * quantity,
                             order_id=order.get('id'),
                             dry_run=False,
                             pnl_pct=pnl_pct,

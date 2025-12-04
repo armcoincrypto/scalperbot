@@ -24,17 +24,27 @@ class PositionManager:
         exchange,
         take_profit_pct: float = None,
         stop_loss_pct: float = None,
-        enable_trailing_stop: bool = False,
-        trailing_stop_pct: float = 0.5,
+        enable_trailing_stop: bool = None,
+        trailing_start_pct: float = None,
+        trailing_offset_pct: float = None,
         max_hold_minutes: int = None
     ):
         self.db = db
         self.exchange = exchange
-        self.take_profit_pct = take_profit_pct or getattr(settings, 'take_profit_pct', 1.5)
+        self.take_profit_pct = take_profit_pct or getattr(settings, 'take_profit_pct', 2.0)
         self.stop_loss_pct = stop_loss_pct or getattr(settings, 'stop_loss_pct', 1.0)
-        self.enable_trailing_stop = enable_trailing_stop
-        self.trailing_stop_pct = trailing_stop_pct
-        self.max_hold_minutes = max_hold_minutes
+
+        # Trailing stop settings (from config)
+        self.enable_trailing_stop = enable_trailing_stop if enable_trailing_stop is not None else getattr(settings, 'trailing_stop_enabled', True)
+        self.trailing_start_pct = trailing_start_pct or getattr(settings, 'trailing_start_pct', 0.5)
+        self.trailing_offset_pct = trailing_offset_pct or getattr(settings, 'trailing_offset_pct', 0.3)
+
+        # Max hold time (convert hours to minutes if from config)
+        if max_hold_minutes is not None:
+            self.max_hold_minutes = max_hold_minutes
+        else:
+            max_hold_hours = getattr(settings, 'max_hold_hours', 6.0)
+            self.max_hold_minutes = int(max_hold_hours * 60) if max_hold_hours > 0 else None
 
         # In-memory position tracking: {symbol: position_data}
         self.positions: Dict[str, Dict] = {}
@@ -43,6 +53,10 @@ class PositionManager:
         self.high_water_marks: Dict[str, float] = {}
 
         logger.info(f"PositionManager initialized: TP={self.take_profit_pct}%, SL={self.stop_loss_pct}%")
+        if self.enable_trailing_stop:
+            logger.info(f"  Trailing stop: ON (start at +{self.trailing_start_pct}%, trail by {self.trailing_offset_pct}%)")
+        if self.max_hold_minutes:
+            logger.info(f"  Max hold time: {self.max_hold_minutes} minutes ({self.max_hold_minutes/60:.1f} hours)")
 
     def has_open_position(self, symbol: str) -> bool:
         """Check if we have an open position for this symbol"""
@@ -150,20 +164,24 @@ class PositionManager:
                 })
                 continue
 
-            # Check trailing stop
-            if self.enable_trailing_stop and pnl_pct > 0:
+            # Check trailing stop (only activates after reaching trailing_start_pct profit)
+            if self.enable_trailing_stop:
                 high_price = self.high_water_marks.get(symbol, entry_price)
-                drop_from_high = ((high_price - current_price) / high_price) * 100
+                high_pnl_pct = ((high_price - entry_price) / entry_price) * 100
 
-                if drop_from_high >= self.trailing_stop_pct:
-                    exits.append({
-                        'symbol': symbol,
-                        'position': position,
-                        'current_price': current_price,
-                        'reason': f'TRAILING_STOP (dropped {drop_from_high:.2f}% from high)',
-                        'pnl_pct': pnl_pct
-                    })
-                    continue
+                # Only trail if we've reached the activation threshold
+                if high_pnl_pct >= self.trailing_start_pct:
+                    drop_from_high = ((high_price - current_price) / high_price) * 100
+
+                    if drop_from_high >= self.trailing_offset_pct:
+                        exits.append({
+                            'symbol': symbol,
+                            'position': position,
+                            'current_price': current_price,
+                            'reason': f'TRAILING_STOP (reached +{high_pnl_pct:.2f}%, dropped {drop_from_high:.2f}% from high)',
+                            'pnl_pct': pnl_pct
+                        })
+                        continue
 
             # Check max hold time
             if self.max_hold_minutes:
