@@ -188,8 +188,7 @@ class ScalperBot:
                         logger.info(f"Skipping {symbol} signal - already have open position")
                         continue
 
-                    # Notify signal via Telegram
-                    await self.telegram.notify_signal(signal)
+                    # Execute signal (notification sent only if trade succeeds)
                     await self.execute_signal(signal)
 
             except Exception as e:
