@@ -311,8 +311,9 @@ class ScalperBot:
 
             if order:
                 order_id = order.get('id')
-                filled_price = order.get('average', price)
-                filled_qty = order.get('filled', quantity)
+                # Use 'or' to handle None values (MEXC sometimes returns None for these)
+                filled_price = order.get('average') or order.get('price') or price
+                filled_qty = order.get('filled') or order.get('amount') or quantity
 
                 self.db.update_trade_status(trade_id, 'FILLED', order_id)
 
