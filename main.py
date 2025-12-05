@@ -15,6 +15,7 @@ from datafeed.candle_store import CandleStore
 from datafeed.orderbook import OrderBook
 from datafeed.rest_poller import RESTPoller
 from strategies.momentum_breakout import MomentumBreakoutStrategy
+from strategies.smart_breakout import SmartBreakoutStrategy
 from exec.router import OrderRouter
 from ops.pos_size import PositionSizer
 from ops.position_manager import PositionManager
@@ -41,13 +42,18 @@ class ScalperBot:
 
     def __init__(self):
         logger.info("="*80)
-        logger.info("ScalperBot v2.0 Initializing...")
+        logger.info("ScalperBot v2.1 Initializing...")
         logger.info(f"Mode: {'DRY_RUN' if settings.dry_run else 'LIVE'}")
+        logger.info(f"Strategy: {settings.strategy_type.upper()}")
         logger.info(f"Trading pairs: {settings.trading_pairs}")
         logger.info(f"TP: {settings.take_profit_pct}% | SL: {settings.stop_loss_pct}%")
         logger.info(f"Trailing: {'Enabled' if settings.trailing_enabled else 'Disabled'}")
         logger.info(f"Max Hold: {settings.max_hold_hours}h")
-        logger.info(f"Volume Filter: {'Enabled' if settings.green3_enabled else 'Disabled'}")
+        if settings.strategy_type == "momentum_breakout":
+            logger.info(f"Volume Filter: {'Enabled' if settings.green3_enabled else 'Disabled'}")
+        else:
+            logger.info(f"HTF RSI Limit: {settings.smart_htf_rsi_limit}")
+            logger.info(f"Dynamic TP/SL: {'ATR-based' if settings.smart_use_dynamic_targets else 'Fixed'}")
         logger.info("="*80)
 
         # Initialize components
@@ -66,7 +72,14 @@ class ScalperBot:
             settings.trading_pairs,
             settings.data_poll_interval
         )
-        self.strategy = MomentumBreakoutStrategy(self.candle_store)
+
+        # Select strategy based on config
+        if settings.strategy_type == "smart_breakout":
+            self.strategy = SmartBreakoutStrategy(self.candle_store)
+            logger.info("Using SMART BREAKOUT strategy (improved with HTF confirmation)")
+        else:
+            self.strategy = MomentumBreakoutStrategy(self.candle_store)
+            logger.info("Using MOMENTUM BREAKOUT strategy (original 4-filter GREEN)")
         self.router = OrderRouter(self.exchange, self.orderbook)
 
         # Position management with database tracking
@@ -269,11 +282,19 @@ class ScalperBot:
 
             # Calculate TP/SL prices
             side = 'buy' if action == 'BUY' else 'sell'
-            tp_sl = self.position_manager.calculate_tp_sl_prices(price, side)
-            tp_price = tp_sl['take_profit_price']
-            sl_price = tp_sl['stop_loss_price']
 
-            logger.info(f"TP: {tp_price:.4f} (+{settings.take_profit_pct}%) | SL: {sl_price:.4f} (-{settings.stop_loss_pct}%)")
+            # Use dynamic targets from smart breakout if available
+            if 'targets' in signal and settings.smart_use_dynamic_targets:
+                targets = signal['targets']
+                tp_price = targets['take_profit_price']
+                sl_price = targets['stop_loss_price']
+                logger.info(f"Using DYNAMIC ATR-based targets (R:R={targets['risk_reward']:.1f})")
+                logger.info(f"TP: {tp_price:.4f} (+{targets['take_profit_pct']:.2f}%) | SL: {sl_price:.4f} (-{targets['stop_loss_pct']:.2f}%)")
+            else:
+                tp_sl = self.position_manager.calculate_tp_sl_prices(price, side)
+                tp_price = tp_sl['take_profit_price']
+                sl_price = tp_sl['stop_loss_price']
+                logger.info(f"TP: {tp_price:.4f} (+{settings.take_profit_pct}%) | SL: {sl_price:.4f} (-{settings.stop_loss_pct}%)")
 
             # Log trade to database (NEW status)
             trade_id = self.db.log_trade(
@@ -318,7 +339,17 @@ class ScalperBot:
                 self.db.update_trade_status(trade_id, 'FILLED', order_id)
 
                 # Recalculate TP/SL with actual fill price
-                tp_sl = self.position_manager.calculate_tp_sl_prices(filled_price, side)
+                if 'targets' in signal and settings.smart_use_dynamic_targets:
+                    # For smart breakout, recalculate based on ATR ratio
+                    targets = signal['targets']
+                    price_diff_tp = targets['take_profit_price'] - signal['price']
+                    price_diff_sl = signal['price'] - targets['stop_loss_price']
+                    tp_price = filled_price + price_diff_tp
+                    sl_price = filled_price - price_diff_sl
+                else:
+                    tp_sl = self.position_manager.calculate_tp_sl_prices(filled_price, side)
+                    tp_price = tp_sl['take_profit_price']
+                    sl_price = tp_sl['stop_loss_price']
 
                 # Open position in database
                 position_id = self.db.open_position(
@@ -328,8 +359,8 @@ class ScalperBot:
                     entry_price=filled_price,
                     quantity=filled_qty,
                     notional=filled_price * filled_qty,
-                    take_profit_price=tp_sl['take_profit_price'],
-                    stop_loss_price=tp_sl['stop_loss_price']
+                    take_profit_price=tp_price,
+                    stop_loss_price=sl_price
                 )
 
                 logger.info(f"Order executed: {order_id}")

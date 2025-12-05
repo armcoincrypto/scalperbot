@@ -31,13 +31,27 @@ class Settings(BaseSettings):
     strategy_interval: int = 60  # Run strategy every N seconds
     data_poll_interval: int = 10  # Poll market data every N seconds
 
-    # GREEN filter thresholds (momentum breakout strategy)
+    # Strategy selection: "momentum_breakout" (original) or "smart_breakout" (improved)
+    strategy_type: str = "smart_breakout"
+
+    # GREEN filter thresholds (momentum breakout strategy - ORIGINAL)
     green2_bb_period: int = 20
     green2_bb_std: float = 2.0
     green3_volume_threshold: float = 1.2  # Volume Z-score threshold (lowered from 1.5)
     green3_enabled: bool = True  # ENABLED - important for signal quality
     green4_breakout_period: int = 10
     green4_breakout_buffer_bps: int = 10  # Basis points (0.1%)
+
+    # Smart Breakout Strategy parameters (IMPROVED)
+    smart_ema_period: int = 20  # EMA period for trend detection
+    smart_rsi_period: int = 14  # RSI period
+    smart_atr_period: int = 14  # ATR period for dynamic TP/SL
+    smart_volume_multiplier: float = 1.5  # Volume must be this multiple of average
+    smart_breakout_lookback: int = 20  # Lookback for resistance detection
+    smart_rsi_oversold: int = 40  # RSI lower bound
+    smart_rsi_overbought: int = 70  # RSI upper bound (avoid buying overbought)
+    smart_htf_rsi_limit: int = 75  # Higher timeframe RSI limit
+    smart_use_dynamic_targets: bool = True  # Use ATR-based TP/SL instead of fixed
 
     # Position sizing
     position_size_usd: float = 100.0  # Default position size
