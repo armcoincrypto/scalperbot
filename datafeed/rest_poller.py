@@ -40,6 +40,10 @@ class RESTPoller:
         # Track last poll time per symbol
         self.last_poll: dict = {}
 
+        # Track 1h candle updates (don't need to update every cycle)
+        self.last_1h_update = 0
+        self.update_1h_interval = 1800  # Update 1h candles every 30 minutes
+
     async def initialize_historical(self):
         """Fetch historical candles on startup to speed up warmup"""
         logger.info("🔄 Fetching historical candles for warmup...")
@@ -47,22 +51,39 @@ class RESTPoller:
         for symbol in self.symbols:
             try:
                 # Fetch last 500 1m candles (about 8 hours)
-                ohlcv = self.exchange.fetch_ohlcv(symbol, '1m', limit=500)
+                ohlcv_1m = self.exchange.fetch_ohlcv(symbol, '1m', limit=500)
 
-                if ohlcv:
-                    self.candle_store.initialize_historical(symbol, ohlcv)
-                    logger.info(f"✅ Loaded {len(ohlcv)} historical candles for {symbol}")
+                if ohlcv_1m:
+                    self.candle_store.initialize_historical(symbol, ohlcv_1m)
+                    logger.info(f"✅ Loaded {len(ohlcv_1m)} 1m candles for {symbol}")
                 else:
-                    logger.warning(f"⚠️ No historical data for {symbol}")
+                    logger.warning(f"⚠️ No 1m data for {symbol}")
+
+                # Small delay to avoid rate limits
+                await asyncio.sleep(0.3)
+
+                # Fetch last 50 1h candles (for Smart Breakout HTF filter)
+                ohlcv_1h = self.exchange.fetch_ohlcv(symbol, '1h', limit=50)
+
+                if ohlcv_1h:
+                    self.candle_store.add_candles_1h_bulk(symbol, ohlcv_1h)
+                    logger.info(f"✅ Loaded {len(ohlcv_1h)} 1h candles for {symbol}")
+                else:
+                    logger.warning(f"⚠️ No 1h data for {symbol}")
 
             except Exception as e:
                 logger.error(f"❌ Error fetching historical data for {symbol}: {e}")
 
             # Small delay to avoid rate limits
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
 
     async def poll_once(self):
         """Poll all symbols once"""
+        current_time = time.time()
+
+        # Check if we should update 1h candles
+        update_1h = (current_time - self.last_1h_update) >= self.update_1h_interval
+
         for symbol in self.symbols:
             try:
                 # Fetch latest OHLCV (1m)
@@ -75,6 +96,14 @@ class RESTPoller:
                         self.candle_store.add_candle(
                             symbol, timestamp, open_p, high, low, close, volume
                         )
+
+                # Periodically update 1h candles
+                if update_1h:
+                    ohlcv_1h = self.exchange.fetch_ohlcv(symbol, '1h', limit=2)
+                    if ohlcv_1h:
+                        for candle in ohlcv_1h:
+                            ts, op, hi, lo, cl, vol = candle
+                            self.candle_store.add_candle_1h(symbol, ts, op, hi, lo, cl, vol)
 
                 # Fetch order book
                 ob_data = self.exchange.fetch_order_book(symbol, limit=10)
@@ -89,6 +118,11 @@ class RESTPoller:
 
             except Exception as e:
                 logger.error(f"❌ Error polling {symbol}: {e}")
+
+        # Update last 1h update time
+        if update_1h:
+            self.last_1h_update = current_time
+            logger.debug("🔄 Updated 1h candles for all symbols")
 
     async def run(self):
         """Main polling loop"""

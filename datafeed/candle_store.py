@@ -14,6 +14,7 @@ class CandleStore:
     """
     Stores and manages OHLCV candle data
     - Accumulates 1m candles
+    - Stores 1h candles directly (for HTF analysis)
     - Resamples to 5m, 15m, etc.
     - Provides historical data for strategy
     """
@@ -22,11 +23,15 @@ class CandleStore:
         # Store 1m candles as DataFrames: {symbol: DataFrame}
         self.candles_1m: Dict[str, pd.DataFrame] = {}
 
+        # Store 1h candles directly (for Smart Breakout HTF filter)
+        self.candles_1h: Dict[str, pd.DataFrame] = {}
+
         # Store resampled candles: {(symbol, timeframe): DataFrame}
         self.resampled: Dict[tuple, pd.DataFrame] = {}
 
         # Max candles to keep in memory (1440 = 24 hours of 1m data)
         self.max_candles = 1440
+        self.max_candles_1h = 100  # 100 hours of 1h data
 
     def add_candle(
         self,
@@ -62,6 +67,61 @@ class CandleStore:
                     self.candles_1m[symbol] = self.candles_1m[symbol].iloc[-self.max_candles:]
 
         logger.debug(f"Added 1m candle for {symbol}: {datetime.fromtimestamp(timestamp/1000)}")
+
+    def add_candle_1h(
+        self,
+        symbol: str,
+        timestamp: int,
+        open_price: float,
+        high: float,
+        low: float,
+        close: float,
+        volume: float
+    ):
+        """Add a new 1h candle"""
+        candle_data = {
+            'timestamp': timestamp,
+            'open': open_price,
+            'high': high,
+            'low': low,
+            'close': close,
+            'volume': volume
+        }
+
+        if symbol not in self.candles_1h:
+            self.candles_1h[symbol] = pd.DataFrame([candle_data])
+        else:
+            # Check if candle already exists (avoid duplicates)
+            df = self.candles_1h[symbol]
+            if timestamp not in df['timestamp'].values:
+                new_row = pd.DataFrame([candle_data])
+                self.candles_1h[symbol] = pd.concat([df, new_row], ignore_index=True)
+
+                # Keep only recent candles
+                if len(self.candles_1h[symbol]) > self.max_candles_1h:
+                    self.candles_1h[symbol] = self.candles_1h[symbol].iloc[-self.max_candles_1h:]
+
+    def add_candles_1h_bulk(self, symbol: str, ohlcv_list: List[List]):
+        """Add multiple 1h candles at once (from historical fetch)"""
+        if not ohlcv_list:
+            return
+
+        df = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+
+        if symbol not in self.candles_1h:
+            self.candles_1h[symbol] = df
+        else:
+            existing = self.candles_1h[symbol]
+            combined = pd.concat([existing, df], ignore_index=True)
+            combined = combined.drop_duplicates(subset='timestamp', keep='last')
+            combined = combined.sort_values('timestamp').reset_index(drop=True)
+
+            if len(combined) > self.max_candles_1h:
+                combined = combined.iloc[-self.max_candles_1h:]
+
+            self.candles_1h[symbol] = combined
+
+        logger.info(f"Added {len(ohlcv_list)} 1h candles for {symbol}. Total: {len(self.candles_1h[symbol])}")
 
     def add_candles_bulk(self, symbol: str, ohlcv_list: List[List]):
         """
@@ -101,7 +161,14 @@ class CandleStore:
                 return df.iloc[-limit:].copy()
             return df.copy()
 
-        # For higher timeframes, resample from 1m data
+        # For 1h, return directly stored candles (more accurate than resampling)
+        if timeframe == '1h':
+            df = self.candles_1h.get(symbol, pd.DataFrame())
+            if limit and not df.empty:
+                return df.iloc[-limit:].copy()
+            return df.copy()
+
+        # For other timeframes, resample from 1m data
         return self._resample_candles(symbol, timeframe, limit)
 
     def _resample_candles(self, symbol: str, timeframe: str, limit: Optional[int] = None) -> pd.DataFrame:
