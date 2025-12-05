@@ -66,7 +66,7 @@ class TestingDashboard:
             FROM positions p
             LEFT JOIN trades t ON p.trade_id = t.id
             WHERE p.status = 'CLOSED'
-            ORDER BY p.close_time DESC
+            ORDER BY p.closed_at DESC
         """)
         return [dict(row) for row in cursor.fetchall()]
 
@@ -101,7 +101,7 @@ class TestingDashboard:
         wins = []
         losses = []
         for pos in closed_positions:
-            pnl = pos.get('realized_pnl', 0) or 0
+            pnl = pos.get('pnl', 0) or 0
             if pnl > 0:
                 wins.append(pnl)
             elif pnl < 0:
@@ -206,7 +206,7 @@ class TestingDashboard:
 
         for pos in closed_positions:
             symbol = pos['symbol']
-            pnl = pos.get('realized_pnl', 0) or 0
+            pnl = pos.get('pnl', 0) or 0
 
             if symbol not in symbol_data:
                 symbol_data[symbol] = {
@@ -250,11 +250,11 @@ class TestingDashboard:
 
         for pos in closed_positions:
             try:
-                close_time = pos.get('close_time', '')
-                if close_time:
-                    dt = datetime.fromisoformat(close_time.replace('Z', '+00:00'))
+                closed_at = pos.get('closed_at', '')
+                if closed_at:
+                    dt = datetime.fromisoformat(closed_at.replace('Z', '+00:00'))
                     hour = str(dt.hour).zfill(2)
-                    pnl = pos.get('realized_pnl', 0) or 0
+                    pnl = pos.get('pnl', 0) or 0
 
                     hourly[hour]['trades'] += 1
                     hourly[hour]['pnl'] += pnl
