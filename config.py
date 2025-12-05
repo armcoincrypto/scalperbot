@@ -54,8 +54,17 @@ class Settings(BaseSettings):
     smart_use_dynamic_targets: bool = True  # Use ATR-based TP/SL instead of fixed
 
     # Position sizing
-    position_size_usd: float = 100.0  # Default position size
+    position_size_usd: float = 100.0  # Default/fallback position size
     max_positions: int = 3
+
+    # Volatility-based position sizing (expert recommendation #6)
+    use_volatility_sizing: bool = True  # Enable risk-based sizing
+    risk_per_trade_pct: float = 0.3  # Risk 0.3% of equity per trade
+    min_position_usd: float = 10.0  # Minimum position size
+    max_position_usd: float = 500.0  # Maximum position size cap
+
+    # Correlated exposure management (expert recommendation #8)
+    max_correlated_positions: int = 2  # Max positions in same correlation group
 
     # Per-symbol minimum notional (to avoid MIN_NOTIONAL errors)
     # Format: JSON string like '{"BTC/USDT": 200, "ETH/USDT": 100}'

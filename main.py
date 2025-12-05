@@ -83,7 +83,8 @@ class ScalperBot:
         self.router = OrderRouter(self.exchange, self.orderbook)
 
         # Position management with database tracking
-        self.position_sizer = PositionSizer(db=self.db)
+        # Pass exchange for balance queries (volatility-based sizing)
+        self.position_sizer = PositionSizer(db=self.db, exchange=self.exchange)
         self.position_manager = PositionManager(
             self.db,
             self.exchange,
@@ -268,8 +269,19 @@ class ScalperBot:
         logger.info(f"{'*'*60}")
 
         try:
-            # Calculate position size
-            pos_size = self.position_sizer.calculate_size(symbol, price)
+            # Determine stop loss for position sizing
+            # Use dynamic ATR-based SL if available, otherwise use config default
+            if 'targets' in signal and settings.smart_use_dynamic_targets:
+                stop_loss_pct = signal['targets']['stop_loss_pct']
+            else:
+                stop_loss_pct = settings.stop_loss_pct
+
+            # Calculate position size with volatility-based sizing
+            pos_size = self.position_sizer.calculate_size(
+                symbol,
+                price,
+                stop_loss_pct=stop_loss_pct
+            )
 
             if not pos_size['can_trade']:
                 logger.warning(f"Cannot trade: {pos_size['reason']}")
@@ -278,7 +290,7 @@ class ScalperBot:
             quantity = pos_size['quantity']
             notional_usd = pos_size['notional_usd']
 
-            logger.info(f"Position size: {quantity:.6f} {symbol.split('/')[0]} (${notional_usd:.2f})")
+            logger.info(f"Position size: {quantity:.6f} {symbol.split('/')[0]} (${notional_usd:.2f}) [{pos_size['sizing_method']}]")
 
             # Calculate TP/SL prices
             side = 'buy' if action == 'BUY' else 'sell'
