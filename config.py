@@ -24,8 +24,9 @@ class Settings(BaseSettings):
     # Trading mode
     dry_run: bool = True
 
-    # Trading pairs
-    trading_pairs: List[str] = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT"]
+    # Trading pairs - Only profitable pairs from backtest optimization
+    # BNB/USDT: PF=1.14, +$19/month (optimized settings)
+    trading_pairs: List[str] = ["BNB/USDT"]
 
     # Strategy parameters
     strategy_interval: int = 60  # Run strategy every N seconds

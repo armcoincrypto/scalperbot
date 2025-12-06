@@ -97,11 +97,11 @@ class SmartBreakoutBacktester:
         # Position sizing
         self.position_size_usd = 100
 
-        # Exit settings - IMPROVED R:R
+        # Exit settings - OPTIMIZED from backtest
         self.trailing_enabled = True
-        self.tp_atr_mult = 3.0  # Take profit = 3 ATR (was 2)
-        self.sl_atr_mult = 1.0  # Stop loss = 1 ATR
-        self.trailing_activation_pct = 0.5
+        self.tp_atr_mult = 2.0  # Take profit = 2 ATR (optimized)
+        self.sl_atr_mult = 0.8  # Stop loss = 0.8 ATR (optimized - tighter)
+        self.trailing_activation_pct = 0.9  # Start trailing at +0.9% (optimized)
         self.trailing_stop_pct = 0.3
 
         # Max hold time adjusted by timeframe (target ~6 hours)
