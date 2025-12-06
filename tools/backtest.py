@@ -72,8 +72,15 @@ class BacktestResult:
 class SmartBreakoutBacktester:
     """Backtester for Smart Breakout Strategy"""
 
-    def __init__(self, simple_mode: bool = False):
-        self.exchange = ccxt.mexc()
+    def __init__(self, simple_mode: bool = False, exchange: str = 'binance'):
+        # Use Binance for historical data (free, more data available)
+        if exchange == 'binance':
+            self.exchange = ccxt.binance()
+            print("📊 Using Binance for historical data (free)")
+        else:
+            self.exchange = ccxt.mexc()
+            print("📊 Using MEXC for historical data")
+
         self.simple_mode = simple_mode  # Use simplified strategy
 
         # Strategy parameters (matching smart_breakout.py)
@@ -608,6 +615,8 @@ def main():
     parser.add_argument('--symbol', type=str, help='Single symbol to test (default: all pairs)')
     parser.add_argument('--export', type=str, help='Export results to JSON file')
     parser.add_argument('--simple', action='store_true', help='Use simple RSI bounce strategy (fewer filters)')
+    parser.add_argument('--exchange', type=str, default='binance', choices=['binance', 'mexc'],
+                        help='Exchange for historical data (default: binance - more free data)')
 
     args = parser.parse_args()
 
@@ -616,13 +625,13 @@ def main():
     else:
         print("🔧 Using SMART BREAKOUT strategy (5 filters)")
 
-    backtester = SmartBreakoutBacktester(simple_mode=args.simple)
+    backtester = SmartBreakoutBacktester(simple_mode=args.simple, exchange=args.exchange)
 
-    # Default trading pairs
+    # Default trading pairs (profitable from backtest)
+    # Removed: POL (MATIC on Binance), LINK, DOGE, BCH (losers)
     default_symbols = [
-        'SOL/USDT', 'BNB/USDT', 'BCH/USDT', 'LTC/USDT',
-        'XLM/USDT', 'ADA/USDT', 'TRX/USDT', 'DOGE/USDT',
-        'XRP/USDT', 'AVAX/USDT', 'LINK/USDT', 'POL/USDT'
+        'SOL/USDT', 'BNB/USDT', 'ADA/USDT', 'TRX/USDT',
+        'AVAX/USDT', 'LTC/USDT', 'XLM/USDT', 'XRP/USDT'
     ]
 
     if args.symbol:
