@@ -72,8 +72,9 @@ class BacktestResult:
 class SmartBreakoutBacktester:
     """Backtester for Smart Breakout Strategy"""
 
-    def __init__(self):
+    def __init__(self, simple_mode: bool = False):
         self.exchange = ccxt.mexc()
+        self.simple_mode = simple_mode  # Use simplified strategy
 
         # Strategy parameters (matching smart_breakout.py)
         self.ema_period = 20
@@ -99,26 +100,44 @@ class SmartBreakoutBacktester:
         print(f"  Fetching {days} days of {timeframe} data for {symbol}...")
 
         all_candles = []
-        since = int((datetime.utcnow() - timedelta(days=days)).timestamp() * 1000)
 
-        while True:
+        # Calculate proper time range
+        end_time = datetime.now()
+        start_time = end_time - timedelta(days=days)
+        since = int(start_time.timestamp() * 1000)
+        end_ms = int(end_time.timestamp() * 1000)
+
+        fetch_count = 0
+        max_fetches = 100  # Safety limit
+
+        while fetch_count < max_fetches:
             try:
                 candles = self.exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=1000)
                 if not candles:
                     break
 
                 all_candles.extend(candles)
-                since = candles[-1][0] + 1
+                fetch_count += 1
+
+                # Move to next batch
+                last_timestamp = candles[-1][0]
+                since = last_timestamp + 1
+
+                # Check if we've reached current time
+                if last_timestamp >= end_ms or len(candles) < 1000:
+                    break
 
                 # Rate limiting
-                time.sleep(0.1)
+                time.sleep(0.2)
 
-                if len(candles) < 1000:
-                    break
+                # Progress indicator
+                if fetch_count % 10 == 0:
+                    print(f"    ... fetched {len(all_candles)} candles so far")
 
             except Exception as e:
                 print(f"  Error fetching data: {e}")
-                break
+                time.sleep(1)
+                continue
 
         if not all_candles:
             return pd.DataFrame()
@@ -128,7 +147,7 @@ class SmartBreakoutBacktester:
         df = df.drop_duplicates(subset=['timestamp'])
         df = df.sort_values('timestamp').reset_index(drop=True)
 
-        print(f"  Fetched {len(df)} {timeframe} candles")
+        print(f"  ✅ Fetched {len(df)} {timeframe} candles ({df.iloc[0]['timestamp'].date()} to {df.iloc[-1]['timestamp'].date()})")
         return df
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -178,6 +197,38 @@ class SmartBreakoutBacktester:
         }).dropna()
         df_1h = df_1h.reset_index()
         return self.calculate_indicators(df_1h)
+
+    def check_entry_simple(self, df_1m: pd.DataFrame, idx: int) -> Tuple[bool, str]:
+        """Simple entry: RSI oversold bounce + green candle + price rising"""
+        if idx < 20:
+            return False, "Not enough data"
+
+        row = df_1m.iloc[idx]
+        prev_row = df_1m.iloc[idx - 1]
+
+        # Simple conditions:
+        # 1. RSI was below 40 recently (last 5 bars) and now rising
+        recent_rsi = df_1m.iloc[idx-5:idx+1]['rsi'].values
+        if pd.isna(recent_rsi).any():
+            return False, "RSI not ready"
+
+        rsi_was_oversold = any(r < 40 for r in recent_rsi[:-1])
+        rsi_now = row['rsi']
+        rsi_rising = rsi_now > df_1m.iloc[idx-2]['rsi']
+
+        # 2. Current candle is green
+        is_green = row['close'] > row['open']
+
+        # 3. Price above short-term EMA (5-period)
+        ema5 = df_1m.iloc[idx-5:idx+1]['close'].mean()
+        price_above_ema = row['close'] > ema5
+
+        # 4. Not overbought
+        not_overbought = rsi_now < 70
+
+        passed = rsi_was_oversold and rsi_rising and is_green and price_above_ema and not_overbought
+
+        return passed, f"RSI={rsi_now:.1f}, Green={is_green}, AboveEMA={price_above_ema}"
 
     def check_entry_conditions(self, df_1m: pd.DataFrame, df_1h: pd.DataFrame, idx: int) -> Tuple[bool, str]:
         """Check if all entry conditions are met at given index"""
@@ -375,7 +426,12 @@ class SmartBreakoutBacktester:
                 continue
 
             signals_checked += 1
-            passed, reason = self.check_entry_conditions(df_1m, df_1h, idx)
+
+            # Use simple or full strategy
+            if self.simple_mode:
+                passed, reason = self.check_entry_simple(df_1m, idx)
+            else:
+                passed, reason = self.check_entry_conditions(df_1m, df_1h, idx)
 
             if passed:
                 entry_price = df_1m.iloc[idx]['close']
@@ -551,10 +607,16 @@ def main():
     parser.add_argument('--days', type=int, default=7, help='Number of days to backtest (default: 7)')
     parser.add_argument('--symbol', type=str, help='Single symbol to test (default: all pairs)')
     parser.add_argument('--export', type=str, help='Export results to JSON file')
+    parser.add_argument('--simple', action='store_true', help='Use simple RSI bounce strategy (fewer filters)')
 
     args = parser.parse_args()
 
-    backtester = SmartBreakoutBacktester()
+    if args.simple:
+        print("🔧 Using SIMPLE strategy (RSI bounce + green candle)")
+    else:
+        print("🔧 Using SMART BREAKOUT strategy (5 filters)")
+
+    backtester = SmartBreakoutBacktester(simple_mode=args.simple)
 
     # Default trading pairs
     default_symbols = [
