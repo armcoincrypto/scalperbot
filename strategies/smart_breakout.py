@@ -32,11 +32,11 @@ class SmartBreakoutStrategy:
         self.ema_period = 20  # For trend detection
         self.rsi_period = 14
         self.atr_period = 14
-        self.volume_multiplier = 1.5  # Volume must be 1.5x average
+        self.volume_multiplier = 1.2  # Volume must be 1.2x average (lowered from 1.5x)
         self.breakout_lookback = 20  # Look for breakout over 20 bars
-        self.rsi_oversold = 40
-        self.rsi_overbought = 70
-        self.htf_rsi_limit = 75  # Higher timeframe RSI limit
+        self.rsi_oversold = 35  # Widened from 40
+        self.rsi_overbought = 75  # Widened from 70
+        self.htf_rsi_limit = 80  # Higher timeframe RSI limit (raised from 75)
 
     def calculate_ema(self, series: pd.Series, period: int) -> pd.Series:
         """Calculate Exponential Moving Average"""
@@ -68,8 +68,8 @@ class SmartBreakoutStrategy:
     def check_higher_timeframe_trend(self, symbol: str) -> Tuple[bool, str, Dict]:
         """
         FILTER 1: Check 1H timeframe trend
-        - Price above EMA(20)
-        - EMA slope positive
+        - Price near or above EMA(20) - allow within 1% below
+        - RSI not overbought
         """
         df_1h = self.candle_store.get_candles(symbol, '1h', limit=50)
 
@@ -82,25 +82,25 @@ class SmartBreakoutStrategy:
 
         current_price = df_1h.iloc[-1]['close']
         current_ema = df_1h.iloc[-1]['ema20']
-        prev_ema = df_1h.iloc[-2]['ema20']
         htf_rsi = df_1h.iloc[-1]['rsi']
 
-        price_above_ema = current_price > current_ema
-        ema_rising = current_ema > prev_ema
+        # Allow price within 1% below EMA (more lenient)
+        price_near_ema = current_price >= current_ema * 0.99
         rsi_ok = htf_rsi < self.htf_rsi_limit
 
-        trend_up = price_above_ema and ema_rising and rsi_ok
+        trend_ok = price_near_ema and rsi_ok
 
-        msg = (f"HTF: Price={current_price:.4f}, EMA20={current_ema:.4f}, "
-               f"RSI={htf_rsi:.1f}, Trend={'UP ✅' if trend_up else 'DOWN ❌'}")
+        distance_pct = ((current_price - current_ema) / current_ema) * 100
+        msg = (f"HTF: Price={current_price:.4f}, EMA20={current_ema:.4f} ({distance_pct:+.2f}%), "
+               f"RSI={htf_rsi:.1f}, {'OK ✅' if trend_ok else 'DOWN ❌'}")
 
         data = {
             'htf_ema': current_ema,
             'htf_rsi': htf_rsi,
-            'htf_trend': 'UP' if trend_up else 'DOWN'
+            'htf_trend': 'OK' if trend_ok else 'DOWN'
         }
 
-        return trend_up, msg, data
+        return trend_ok, msg, data
 
     def check_momentum_rsi(self, df: pd.DataFrame) -> Tuple[bool, str]:
         """
