@@ -72,7 +72,7 @@ class BacktestResult:
 class SmartBreakoutBacktester:
     """Backtester for Smart Breakout Strategy"""
 
-    def __init__(self, strategy_mode: str = 'simple', exchange: str = 'binance'):
+    def __init__(self, strategy_mode: str = 'simple', exchange: str = 'binance', timeframe: str = '1m'):
         # Use Binance for historical data (free, more data available)
         if exchange == 'binance':
             self.exchange = ccxt.binance()
@@ -82,6 +82,7 @@ class SmartBreakoutBacktester:
             print("📊 Using MEXC for historical data")
 
         self.strategy_mode = strategy_mode  # simple, trend, mean_reversion, momentum
+        self.timeframe = timeframe
 
         # Strategy parameters (matching smart_breakout.py)
         self.ema_period = 20
@@ -102,7 +103,12 @@ class SmartBreakoutBacktester:
         self.sl_atr_mult = 1.0  # Stop loss = 1 ATR
         self.trailing_activation_pct = 0.5
         self.trailing_stop_pct = 0.3
-        self.max_hold_bars = 360  # 6 hours at 1m bars
+
+        # Max hold time adjusted by timeframe (target ~6 hours)
+        # 1m: 360 bars = 6h, 5m: 72 bars = 6h, 15m: 24 bars = 6h
+        timeframe_multipliers = {'1m': 1, '5m': 5, '15m': 15}
+        tf_mult = timeframe_multipliers.get(timeframe, 1)
+        self.max_hold_bars = 360 // tf_mult  # Keep ~6 hours max hold
 
     def fetch_historical_data(self, symbol: str, timeframe: str, days: int) -> pd.DataFrame:
         """Fetch historical OHLCV data"""
@@ -194,10 +200,10 @@ class SmartBreakoutBacktester:
 
         return df
 
-    def resample_to_hourly(self, df_1m: pd.DataFrame) -> pd.DataFrame:
-        """Resample 1m data to 1h"""
-        df = df_1m.set_index('timestamp')
-        df_1h = df.resample('1h').agg({
+    def resample_to_hourly(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Resample data to 1h for HTF confirmation"""
+        df_temp = df.set_index('timestamp')
+        df_1h = df_temp.resample('1h').agg({
             'open': 'first',
             'high': 'max',
             'low': 'min',
@@ -485,27 +491,27 @@ class SmartBreakoutBacktester:
     def run_backtest(self, symbol: str, days: int = 7) -> Optional[BacktestResult]:
         """Run backtest for a single symbol"""
         print(f"\n{'='*60}")
-        print(f"Backtesting {symbol} - {days} days")
+        print(f"Backtesting {symbol} - {days} days ({self.timeframe} timeframe)")
         print(f"{'='*60}")
 
-        # Fetch data
-        df_1m = self.fetch_historical_data(symbol, '1m', days)
-        if df_1m.empty:
+        # Fetch data using configured timeframe
+        df = self.fetch_historical_data(symbol, self.timeframe, days)
+        if df.empty:
             print(f"  No data for {symbol}")
             return None
 
         # Calculate indicators
-        df_1m = self.calculate_indicators(df_1m)
-        df_1m['symbol'] = symbol
+        df = self.calculate_indicators(df)
+        df['symbol'] = symbol
 
-        # Resample to 1H
-        df_1h = self.resample_to_hourly(df_1m)
+        # Resample to 1H for HTF confirmation
+        df_1h = self.resample_to_hourly(df)
 
         result = BacktestResult(
             symbol=symbol,
-            period_start=df_1m.iloc[0]['timestamp'],
-            period_end=df_1m.iloc[-1]['timestamp'],
-            total_bars=len(df_1m)
+            period_start=df.iloc[0]['timestamp'],
+            period_end=df.iloc[-1]['timestamp'],
+            total_bars=len(df)
         )
 
         # Simulate trading
@@ -513,9 +519,9 @@ class SmartBreakoutBacktester:
         last_exit_idx = 0
         signals_checked = 0
 
-        print(f"  Scanning {len(df_1m)} bars for signals...")
+        print(f"  Scanning {len(df)} bars for signals...")
 
-        for idx in range(50, len(df_1m) - 10):
+        for idx in range(50, len(df) - 10):
             if in_position:
                 continue
             if idx <= last_exit_idx:
@@ -525,24 +531,24 @@ class SmartBreakoutBacktester:
 
             # Select strategy based on mode
             if self.strategy_mode == 'simple':
-                passed, reason = self.check_entry_simple(df_1m, idx)
+                passed, reason = self.check_entry_simple(df, idx)
             elif self.strategy_mode == 'trend':
-                passed, reason = self.check_entry_trend(df_1m, idx)
+                passed, reason = self.check_entry_trend(df, idx)
             elif self.strategy_mode == 'mean_reversion':
-                passed, reason = self.check_entry_mean_reversion(df_1m, idx)
+                passed, reason = self.check_entry_mean_reversion(df, idx)
             elif self.strategy_mode == 'momentum':
-                passed, reason = self.check_entry_momentum(df_1m, idx)
+                passed, reason = self.check_entry_momentum(df, idx)
             else:  # 'full' - smart breakout with all filters
-                passed, reason = self.check_entry_conditions(df_1m, df_1h, idx)
+                passed, reason = self.check_entry_conditions(df, df_1h, idx)
 
             if passed:
-                entry_price = df_1m.iloc[idx]['close']
-                trade = self.simulate_trade(df_1m, idx, entry_price)
+                entry_price = df.iloc[idx]['close']
+                trade = self.simulate_trade(df, idx, entry_price)
                 result.trades.append(trade)
 
                 # Find exit index
                 exit_time = trade.exit_time
-                exit_rows = df_1m[df_1m['timestamp'] >= exit_time]
+                exit_rows = df[df['timestamp'] >= exit_time]
                 if not exit_rows.empty:
                     last_exit_idx = exit_rows.index[0]
 
@@ -607,7 +613,9 @@ class SmartBreakoutBacktester:
             print(f"  Total PnL: ${result.total_pnl:.2f}")
             print(f"  Avg Win: ${result.avg_win:.2f}")
             print(f"  Avg Loss: ${result.avg_loss:.2f}")
-            print(f"  Avg Bars Held: {result.avg_bars_held:.0f} (~{result.avg_bars_held/60:.1f}h)")
+            tf_mins = {'1m': 1, '5m': 5, '15m': 15}.get(self.timeframe, 1)
+            avg_hold_hrs = (result.avg_bars_held * tf_mins) / 60
+            print(f"  Avg Bars Held: {result.avg_bars_held:.0f} bars (~{avg_hold_hrs:.1f}h)")
             print(f"  Max Drawdown: ${result.max_drawdown:.2f}")
 
             # Show exit reasons
@@ -623,7 +631,8 @@ class SmartBreakoutBacktester:
         print("\n" + "="*60)
         print("SMART BREAKOUT STRATEGY BACKTEST")
         print(f"Symbols: {len(symbols)}")
-        print(f"Period: {days} days")
+        print(f"Period: {days} days | Timeframe: {self.timeframe}")
+        print(f"Max Hold: {self.max_hold_bars} bars (~{self.max_hold_bars * ({'1m':1,'5m':5,'15m':15}.get(self.timeframe,1)) / 60:.1f}h)")
         print("="*60)
 
         results = []
@@ -713,6 +722,8 @@ def main():
                         choices=['simple', 'trend', 'mean_reversion', 'momentum', 'full'],
                         help='Strategy to test: simple (RSI bounce), trend (EMA crossover), mean_reversion (buy dips), momentum (3 green candles), full (5-filter)')
     parser.add_argument('--simple', action='store_true', help='Shortcut for --strategy simple')
+    parser.add_argument('--timeframe', type=str, default='1m', choices=['1m', '5m', '15m'],
+                        help='Timeframe for candles (default: 1m, try 5m for less noise)')
     parser.add_argument('--exchange', type=str, default='binance', choices=['binance', 'mexc'],
                         help='Exchange for historical data (default: binance - more free data)')
 
@@ -731,9 +742,10 @@ def main():
         'full': 'SMART BREAKOUT (5 Filters)'
     }
     print(f"🔧 Using {strategy_names.get(strategy, strategy)} strategy")
+    print(f"⏱️  Timeframe: {args.timeframe}")
     print(f"📈 R:R Ratio: 3:1 (TP=3 ATR, SL=1 ATR)")
 
-    backtester = SmartBreakoutBacktester(strategy_mode=strategy, exchange=args.exchange)
+    backtester = SmartBreakoutBacktester(strategy_mode=strategy, exchange=args.exchange, timeframe=args.timeframe)
 
     # Default trading pairs (profitable from backtest)
     # Removed: POL (MATIC on Binance), LINK, DOGE, BCH (losers)
