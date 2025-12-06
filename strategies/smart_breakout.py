@@ -219,9 +219,9 @@ class SmartBreakoutStrategy:
         df['atr'] = self.calculate_atr(df, self.atr_period)
         atr = df.iloc[-1]['atr']
 
-        # TP = 2 ATR, SL = 1 ATR
+        # TP = 2 ATR, SL = 0.8 ATR (optimized - tighter stop)
         tp_price = entry_price + (2 * atr)
-        sl_price = entry_price - (1 * atr)
+        sl_price = entry_price - (0.8 * atr)
 
         # Calculate percentages
         tp_pct = ((tp_price - entry_price) / entry_price) * 100

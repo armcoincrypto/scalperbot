@@ -76,7 +76,7 @@ class Settings(BaseSettings):
 
     # Trailing stop settings
     trailing_enabled: bool = True  # Enable trailing stop
-    trail_start_pct: float = 0.7  # Start trailing when +0.7% profit reached (optimized from 0.5%)
+    trail_start_pct: float = 0.9  # Start trailing when +0.9% profit reached (optimized from 0.7%)
     trail_offset_pct: float = 0.15  # Trail offset from peak (break-even + cushion)
 
     # Time-based exit
