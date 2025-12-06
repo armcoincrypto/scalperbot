@@ -72,7 +72,7 @@ class BacktestResult:
 class SmartBreakoutBacktester:
     """Backtester for Smart Breakout Strategy"""
 
-    def __init__(self, simple_mode: bool = False, exchange: str = 'binance'):
+    def __init__(self, strategy_mode: str = 'simple', exchange: str = 'binance'):
         # Use Binance for historical data (free, more data available)
         if exchange == 'binance':
             self.exchange = ccxt.binance()
@@ -81,7 +81,7 @@ class SmartBreakoutBacktester:
             self.exchange = ccxt.mexc()
             print("📊 Using MEXC for historical data")
 
-        self.simple_mode = simple_mode  # Use simplified strategy
+        self.strategy_mode = strategy_mode  # simple, trend, mean_reversion, momentum
 
         # Strategy parameters (matching smart_breakout.py)
         self.ema_period = 20
@@ -96,8 +96,10 @@ class SmartBreakoutBacktester:
         # Position sizing
         self.position_size_usd = 100
 
-        # Exit settings
+        # Exit settings - IMPROVED R:R
         self.trailing_enabled = True
+        self.tp_atr_mult = 3.0  # Take profit = 3 ATR (was 2)
+        self.sl_atr_mult = 1.0  # Stop loss = 1 ATR
         self.trailing_activation_pct = 0.5
         self.trailing_stop_pct = 0.3
         self.max_hold_bars = 360  # 6 hours at 1m bars
@@ -237,6 +239,93 @@ class SmartBreakoutBacktester:
 
         return passed, f"RSI={rsi_now:.1f}, Green={is_green}, AboveEMA={price_above_ema}"
 
+    def check_entry_trend(self, df_1m: pd.DataFrame, idx: int) -> Tuple[bool, str]:
+        """Trend Following: Buy when price crosses above EMA in strong uptrend"""
+        if idx < 30:
+            return False, "Not enough data"
+
+        row = df_1m.iloc[idx]
+        prev_row = df_1m.iloc[idx - 1]
+
+        # 1. Price just crossed above EMA20
+        price_above_ema = row['close'] > row['ema20']
+        was_below_ema = prev_row['close'] <= prev_row['ema20']
+        ema_crossover = price_above_ema and was_below_ema
+
+        # 2. EMA is rising (trend confirmation)
+        ema_rising = row['ema20'] > df_1m.iloc[idx - 5]['ema20']
+
+        # 3. RSI showing momentum (above 50)
+        rsi = row['rsi']
+        if pd.isna(rsi):
+            return False, "RSI not ready"
+        rsi_bullish = 50 < rsi < 70
+
+        # 4. Volume above average
+        vol_ratio = row['volume'] / row['vol_avg'] if row['vol_avg'] > 0 else 0
+        good_volume = vol_ratio > 1.0
+
+        passed = ema_crossover and ema_rising and rsi_bullish and good_volume
+
+        return passed, f"EMA Cross={ema_crossover}, Rising={ema_rising}, RSI={rsi:.1f}"
+
+    def check_entry_mean_reversion(self, df_1m: pd.DataFrame, idx: int) -> Tuple[bool, str]:
+        """Mean Reversion: Buy when price dips below EMA in uptrend, then bounces"""
+        if idx < 30:
+            return False, "Not enough data"
+
+        row = df_1m.iloc[idx]
+        prev_row = df_1m.iloc[idx - 1]
+
+        # 1. Overall trend is up (EMA rising over 20 bars)
+        ema_trend_up = row['ema20'] > df_1m.iloc[idx - 20]['ema20']
+
+        # 2. Price was below EMA (dip) but now bouncing back
+        was_below = prev_row['close'] < prev_row['ema20']
+        now_recovering = row['close'] > prev_row['close']
+        near_ema = abs(row['close'] - row['ema20']) / row['ema20'] < 0.01  # Within 1%
+
+        # 3. RSI was oversold (below 35) recently
+        recent_rsi = df_1m.iloc[idx-10:idx]['rsi'].values
+        if pd.isna(recent_rsi).any():
+            return False, "RSI not ready"
+        was_oversold = any(r < 35 for r in recent_rsi)
+
+        # 4. Current candle is green
+        is_green = row['close'] > row['open']
+
+        passed = ema_trend_up and was_below and now_recovering and was_oversold and is_green
+
+        return passed, f"Trend Up={ema_trend_up}, Bounce={now_recovering}, WasOversold={was_oversold}"
+
+    def check_entry_momentum(self, df_1m: pd.DataFrame, idx: int) -> Tuple[bool, str]:
+        """Momentum: Buy on strong momentum with volume confirmation"""
+        if idx < 30:
+            return False, "Not enough data"
+
+        row = df_1m.iloc[idx]
+
+        # 1. Price making higher highs (last 3 candles all green and rising)
+        last_3_green = all(df_1m.iloc[idx-i]['close'] > df_1m.iloc[idx-i]['open'] for i in range(3))
+        last_3_rising = all(df_1m.iloc[idx-i]['close'] > df_1m.iloc[idx-i-1]['close'] for i in range(3))
+
+        # 2. Strong RSI momentum (55-75)
+        rsi = row['rsi']
+        if pd.isna(rsi):
+            return False, "RSI not ready"
+        rsi_strong = 55 < rsi < 75
+
+        # 3. Volume increasing
+        vol_ratio = row['volume'] / row['vol_avg'] if row['vol_avg'] > 0 else 0
+        strong_volume = vol_ratio > 1.5
+
+        # 4. Price above EMA
+        above_ema = row['close'] > row['ema20']
+
+        passed = last_3_green and last_3_rising and rsi_strong and strong_volume and above_ema
+
+        return passed, f"3Green={last_3_green}, Rising={last_3_rising}, Vol={vol_ratio:.1f}x"
+
     def check_entry_conditions(self, df_1m: pd.DataFrame, df_1h: pd.DataFrame, idx: int) -> Tuple[bool, str]:
         """Check if all entry conditions are met at given index"""
 
@@ -321,9 +410,9 @@ class SmartBreakoutBacktester:
 
         atr = df.iloc[entry_idx]['atr']
 
-        # Calculate TP/SL based on ATR
-        tp_price = entry_price + (2 * atr)
-        sl_price = entry_price - (1 * atr)
+        # Calculate TP/SL based on ATR - Using improved R:R ratio
+        tp_price = entry_price + (self.tp_atr_mult * atr)  # 3:1 R:R
+        sl_price = entry_price - (self.sl_atr_mult * atr)
 
         quantity = self.position_size_usd / entry_price
 
@@ -434,10 +523,16 @@ class SmartBreakoutBacktester:
 
             signals_checked += 1
 
-            # Use simple or full strategy
-            if self.simple_mode:
+            # Select strategy based on mode
+            if self.strategy_mode == 'simple':
                 passed, reason = self.check_entry_simple(df_1m, idx)
-            else:
+            elif self.strategy_mode == 'trend':
+                passed, reason = self.check_entry_trend(df_1m, idx)
+            elif self.strategy_mode == 'mean_reversion':
+                passed, reason = self.check_entry_mean_reversion(df_1m, idx)
+            elif self.strategy_mode == 'momentum':
+                passed, reason = self.check_entry_momentum(df_1m, idx)
+            else:  # 'full' - smart breakout with all filters
                 passed, reason = self.check_entry_conditions(df_1m, df_1h, idx)
 
             if passed:
@@ -610,22 +705,35 @@ class SmartBreakoutBacktester:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Backtest Smart Breakout Strategy")
+    parser = argparse.ArgumentParser(description="Backtest Trading Strategies")
     parser.add_argument('--days', type=int, default=7, help='Number of days to backtest (default: 7)')
     parser.add_argument('--symbol', type=str, help='Single symbol to test (default: all pairs)')
     parser.add_argument('--export', type=str, help='Export results to JSON file')
-    parser.add_argument('--simple', action='store_true', help='Use simple RSI bounce strategy (fewer filters)')
+    parser.add_argument('--strategy', type=str, default='simple',
+                        choices=['simple', 'trend', 'mean_reversion', 'momentum', 'full'],
+                        help='Strategy to test: simple (RSI bounce), trend (EMA crossover), mean_reversion (buy dips), momentum (3 green candles), full (5-filter)')
+    parser.add_argument('--simple', action='store_true', help='Shortcut for --strategy simple')
     parser.add_argument('--exchange', type=str, default='binance', choices=['binance', 'mexc'],
                         help='Exchange for historical data (default: binance - more free data)')
 
     args = parser.parse_args()
 
+    # Handle --simple shortcut
+    strategy = args.strategy
     if args.simple:
-        print("🔧 Using SIMPLE strategy (RSI bounce + green candle)")
-    else:
-        print("🔧 Using SMART BREAKOUT strategy (5 filters)")
+        strategy = 'simple'
 
-    backtester = SmartBreakoutBacktester(simple_mode=args.simple, exchange=args.exchange)
+    strategy_names = {
+        'simple': 'SIMPLE (RSI Bounce)',
+        'trend': 'TREND FOLLOWING (EMA Crossover)',
+        'mean_reversion': 'MEAN REVERSION (Buy Dips)',
+        'momentum': 'MOMENTUM (3 Green Candles)',
+        'full': 'SMART BREAKOUT (5 Filters)'
+    }
+    print(f"🔧 Using {strategy_names.get(strategy, strategy)} strategy")
+    print(f"📈 R:R Ratio: 3:1 (TP=3 ATR, SL=1 ATR)")
+
+    backtester = SmartBreakoutBacktester(strategy_mode=strategy, exchange=args.exchange)
 
     # Default trading pairs (profitable from backtest)
     # Removed: POL (MATIC on Binance), LINK, DOGE, BCH (losers)
