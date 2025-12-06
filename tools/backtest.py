@@ -713,19 +713,28 @@ class SmartBreakoutBacktester:
         }
 
 
-def run_optimization(symbol: str, days: int, exchange: str, timeframe: str):
+def run_optimization(symbol: str, days: int, exchange: str, timeframe: str, extended: bool = False):
     """Run parameter optimization to find best settings"""
     print("\n" + "="*70)
-    print("🔬 PARAMETER OPTIMIZATION MODE")
+    print("🔬 PARAMETER OPTIMIZATION MODE" + (" (EXTENDED)" if extended else ""))
     print("="*70)
 
     # Parameter ranges to test
-    tp_multipliers = [1.5, 2.0, 2.5, 3.0]
-    rsi_thresholds = [30, 35, 40]
-    trailing_activations = [0.3, 0.5, 0.7]
+    if extended:
+        # Extended optimization - test more parameters
+        tp_multipliers = [1.5, 2.0, 2.5]
+        sl_multipliers = [0.8, 1.0, 1.2]
+        trailing_activations = [0.5, 0.7, 0.9]
+        rsi_thresholds = [35, 40]  # Reduced to manage combinations
+    else:
+        # Basic optimization
+        tp_multipliers = [1.5, 2.0, 2.5, 3.0]
+        sl_multipliers = [1.0]  # Fixed
+        trailing_activations = [0.3, 0.5, 0.7]
+        rsi_thresholds = [30, 35, 40]
 
     results = []
-    total_tests = len(tp_multipliers) * len(rsi_thresholds) * len(trailing_activations)
+    total_tests = len(tp_multipliers) * len(sl_multipliers) * len(rsi_thresholds) * len(trailing_activations)
     test_num = 0
 
     # Fetch data once
@@ -742,71 +751,75 @@ def run_optimization(symbol: str, days: int, exchange: str, timeframe: str):
     print(f"\nTesting {total_tests} parameter combinations...\n")
 
     for tp_mult in tp_multipliers:
-        for rsi_thresh in rsi_thresholds:
-            for trail_act in trailing_activations:
-                test_num += 1
+        for sl_mult in sl_multipliers:
+            for rsi_thresh in rsi_thresholds:
+                for trail_act in trailing_activations:
+                    test_num += 1
 
-                # Create backtester with custom params
-                bt = SmartBreakoutBacktester(strategy_mode='simple', exchange=exchange, timeframe=timeframe)
-                bt.tp_atr_mult = tp_mult
-                bt.rsi_oversold = rsi_thresh
-                bt.trailing_activation_pct = trail_act
+                    # Create backtester with custom params
+                    bt = SmartBreakoutBacktester(strategy_mode='simple', exchange=exchange, timeframe=timeframe)
+                    bt.tp_atr_mult = tp_mult
+                    bt.sl_atr_mult = sl_mult
+                    bt.rsi_oversold = rsi_thresh
+                    bt.trailing_activation_pct = trail_act
 
-                # Run simulation
-                trades = []
-                last_exit_idx = 0
+                    # Run simulation
+                    trades = []
+                    last_exit_idx = 0
 
-                for idx in range(50, len(df) - 10):
-                    if idx <= last_exit_idx:
-                        continue
+                    for idx in range(50, len(df) - 10):
+                        if idx <= last_exit_idx:
+                            continue
 
-                    # Check entry with custom RSI threshold
-                    row = df.iloc[idx]
-                    recent_rsi = df.iloc[idx-5:idx+1]['rsi'].values
-                    if pd.isna(recent_rsi).any():
-                        continue
+                        # Check entry with custom RSI threshold
+                        row = df.iloc[idx]
+                        recent_rsi = df.iloc[idx-5:idx+1]['rsi'].values
+                        if pd.isna(recent_rsi).any():
+                            continue
 
-                    rsi_was_oversold = any(r < rsi_thresh for r in recent_rsi[:-1])
-                    rsi_now = row['rsi']
-                    rsi_rising = rsi_now > df.iloc[idx-2]['rsi']
-                    is_green = row['close'] > row['open']
-                    ema5 = df.iloc[idx-5:idx+1]['close'].mean()
-                    price_above_ema = row['close'] > ema5
-                    not_overbought = rsi_now < 70
+                        rsi_was_oversold = any(r < rsi_thresh for r in recent_rsi[:-1])
+                        rsi_now = row['rsi']
+                        rsi_rising = rsi_now > df.iloc[idx-2]['rsi']
+                        is_green = row['close'] > row['open']
+                        ema5 = df.iloc[idx-5:idx+1]['close'].mean()
+                        price_above_ema = row['close'] > ema5
+                        not_overbought = rsi_now < 70
 
-                    if rsi_was_oversold and rsi_rising and is_green and price_above_ema and not_overbought:
-                        entry_price = row['close']
-                        trade = bt.simulate_trade(df, idx, entry_price)
-                        trades.append(trade)
+                        if rsi_was_oversold and rsi_rising and is_green and price_above_ema and not_overbought:
+                            entry_price = row['close']
+                            trade = bt.simulate_trade(df, idx, entry_price)
+                            trades.append(trade)
 
-                        exit_rows = df[df['timestamp'] >= trade.exit_time]
-                        if not exit_rows.empty:
-                            last_exit_idx = exit_rows.index[0]
+                            exit_rows = df[df['timestamp'] >= trade.exit_time]
+                            if not exit_rows.empty:
+                                last_exit_idx = exit_rows.index[0]
 
-                # Calculate metrics
-                if trades:
-                    wins = [t for t in trades if t.pnl > 0]
-                    losses = [t for t in trades if t.pnl <= 0]
-                    total_pnl = sum(t.pnl for t in trades)
-                    win_rate = len(wins) / len(trades) * 100
-                    win_pnl = sum(t.pnl for t in wins) if wins else 0
-                    loss_pnl = abs(sum(t.pnl for t in losses)) if losses else 0
-                    pf = win_pnl / loss_pnl if loss_pnl > 0 else float('inf')
+                    # Calculate metrics
+                    if trades:
+                        wins = [t for t in trades if t.pnl > 0]
+                        losses = [t for t in trades if t.pnl <= 0]
+                        total_pnl = sum(t.pnl for t in trades)
+                        win_rate = len(wins) / len(trades) * 100
+                        win_pnl = sum(t.pnl for t in wins) if wins else 0
+                        loss_pnl = abs(sum(t.pnl for t in losses)) if losses else 0
+                        pf = win_pnl / loss_pnl if loss_pnl > 0 else float('inf')
 
-                    results.append({
-                        'tp_mult': tp_mult,
-                        'rsi_thresh': rsi_thresh,
-                        'trail_act': trail_act,
-                        'trades': len(trades),
-                        'wins': len(wins),
-                        'win_rate': win_rate,
-                        'pf': pf,
-                        'pnl': total_pnl
-                    })
+                        results.append({
+                            'tp_mult': tp_mult,
+                            'sl_mult': sl_mult,
+                            'rsi_thresh': rsi_thresh,
+                            'trail_act': trail_act,
+                            'trades': len(trades),
+                            'wins': len(wins),
+                            'win_rate': win_rate,
+                            'pf': pf,
+                            'pnl': total_pnl
+                        })
 
-                    status = "✓" if total_pnl > 0 else "✗"
-                    print(f"  [{test_num}/{total_tests}] TP={tp_mult:.1f}x RSI<{rsi_thresh} Trail={trail_act:.1f}% → "
-                          f"WR={win_rate:.1f}% PF={pf:.2f} PnL=${total_pnl:.2f} {status}")
+                        status = "✓" if total_pnl > 0 else "✗"
+                        sl_str = f" SL={sl_mult:.1f}x" if extended else ""
+                        print(f"  [{test_num}/{total_tests}] TP={tp_mult:.1f}x{sl_str} RSI<{rsi_thresh} Trail={trail_act:.1f}% → "
+                              f"WR={win_rate:.1f}% PF={pf:.2f} PnL=${total_pnl:.2f} {status}")
 
     # Sort by profit factor, then PnL
     results.sort(key=lambda x: (x['pf'], x['pnl']), reverse=True)
@@ -814,13 +827,21 @@ def run_optimization(symbol: str, days: int, exchange: str, timeframe: str):
     print("\n" + "="*70)
     print("🏆 TOP 10 PARAMETER COMBINATIONS (by Profit Factor)")
     print("="*70)
-    print(f"{'TP':>6} {'RSI<':>6} {'Trail':>6} {'Trades':>8} {'Win%':>8} {'PF':>8} {'PnL':>12}")
-    print(f"{'-'*6} {'-'*6} {'-'*6} {'-'*8} {'-'*8} {'-'*8} {'-'*12}")
+    if extended:
+        print(f"{'TP':>6} {'SL':>6} {'RSI<':>6} {'Trail':>6} {'Trades':>8} {'Win%':>8} {'PF':>8} {'PnL':>12}")
+        print(f"{'-'*6} {'-'*6} {'-'*6} {'-'*6} {'-'*8} {'-'*8} {'-'*8} {'-'*12}")
+    else:
+        print(f"{'TP':>6} {'RSI<':>6} {'Trail':>6} {'Trades':>8} {'Win%':>8} {'PF':>8} {'PnL':>12}")
+        print(f"{'-'*6} {'-'*6} {'-'*6} {'-'*8} {'-'*8} {'-'*8} {'-'*12}")
 
     for r in results[:10]:
         pf_str = f"{r['pf']:.2f}" if r['pf'] != float('inf') else "∞"
-        print(f"{r['tp_mult']:>5.1f}x {r['rsi_thresh']:>5} {r['trail_act']:>5.1f}% "
-              f"{r['trades']:>8} {r['win_rate']:>7.1f}% {pf_str:>8} ${r['pnl']:>10.2f}")
+        if extended:
+            print(f"{r['tp_mult']:>5.1f}x {r['sl_mult']:>5.1f}x {r['rsi_thresh']:>5} {r['trail_act']:>5.1f}% "
+                  f"{r['trades']:>8} {r['win_rate']:>7.1f}% {pf_str:>8} ${r['pnl']:>10.2f}")
+        else:
+            print(f"{r['tp_mult']:>5.1f}x {r['rsi_thresh']:>5} {r['trail_act']:>5.1f}% "
+                  f"{r['trades']:>8} {r['win_rate']:>7.1f}% {pf_str:>8} ${r['pnl']:>10.2f}")
 
     if results:
         best = results[0]
@@ -828,6 +849,8 @@ def run_optimization(symbol: str, days: int, exchange: str, timeframe: str):
         print("🎯 RECOMMENDED SETTINGS:")
         print("="*70)
         print(f"  TP Multiplier: {best['tp_mult']}x ATR")
+        if extended:
+            print(f"  SL Multiplier: {best['sl_mult']}x ATR")
         print(f"  RSI Oversold Threshold: {best['rsi_thresh']}")
         print(f"  Trailing Stop Activation: {best['trail_act']}%")
         print(f"  Expected Win Rate: {best['win_rate']:.1f}%")
@@ -850,13 +873,15 @@ def main():
                         help='Exchange for historical data (default: binance - more free data)')
     parser.add_argument('--optimize', action='store_true',
                         help='Run parameter optimization to find best settings')
+    parser.add_argument('--extended', action='store_true',
+                        help='Extended optimization: also test SL multipliers (0.8x, 1.0x, 1.2x)')
 
     args = parser.parse_args()
 
     # Run optimization mode if requested
     if args.optimize:
         symbol = args.symbol or 'BNB/USDT'
-        run_optimization(symbol, args.days, args.exchange, args.timeframe)
+        run_optimization(symbol, args.days, args.exchange, args.timeframe, extended=args.extended)
         return
 
     # Handle --simple shortcut
