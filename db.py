@@ -35,10 +35,29 @@ class TradeDB:
                 order_id TEXT,
                 status TEXT DEFAULT 'NEW',
                 pnl REAL DEFAULT 0,
+                exit_price REAL,
+                exit_reason TEXT,
+                closed_at TEXT,
                 signal_reason TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Add columns to existing tables if they don't exist
+        try:
+            self.conn.execute("ALTER TABLE trades ADD COLUMN exit_price REAL")
+        except:
+            pass  # Column already exists
+
+        try:
+            self.conn.execute("ALTER TABLE trades ADD COLUMN exit_reason TEXT")
+        except:
+            pass
+
+        try:
+            self.conn.execute("ALTER TABLE trades ADD COLUMN closed_at TEXT")
+        except:
+            pass
 
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS daily_pnl (
@@ -103,6 +122,37 @@ class TradeDB:
             (pnl, trade_id)
         )
         self.conn.commit()
+
+    def close_trade(self, trade_id: int, exit_price: float, exit_reason: str, pnl: float):
+        """Close a trade with full exit details"""
+        self.conn.execute("""
+            UPDATE trades SET
+                status = 'CLOSED',
+                pnl = ?,
+                exit_price = ?,
+                exit_reason = ?,
+                closed_at = ?
+            WHERE id = ?
+        """, (pnl, exit_price, exit_reason, datetime.utcnow().isoformat(), trade_id))
+        self.conn.commit()
+
+    def get_trade_by_id(self, trade_id: int) -> Optional[Dict[str, Any]]:
+        """Get a specific trade by ID"""
+        cursor = self.conn.execute(
+            "SELECT * FROM trades WHERE id = ?",
+            (trade_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_open_trades_by_symbol(self, symbol: str) -> List[Dict[str, Any]]:
+        """Get open trades for a specific symbol"""
+        cursor = self.conn.execute("""
+            SELECT * FROM trades
+            WHERE symbol = ? AND status IN ('FILLED', 'OPEN', 'DRY_RUN')
+            ORDER BY created_at DESC
+        """, (symbol,))
+        return [dict(row) for row in cursor.fetchall()]
 
     def get_daily_pnl(self, date: Optional[str] = None) -> float:
         """Get PnL for a specific date (default: today)"""

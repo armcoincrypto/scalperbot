@@ -2,10 +2,11 @@
 REST API Poller
 Polls MEXC market data every N seconds
 Feeds data into CandleStore and OrderBook
+Includes HTF (1H) data for trend confirmation
 """
 import asyncio
 import time
-from typing import List
+from typing import List, Dict
 import logging
 from exchanges.adapter import MEXCAdapter
 from datafeed.candle_store import CandleStore
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 class RESTPoller:
     """
     Polls market data from MEXC REST API
-    - Fetches OHLCV candles
+    - Fetches OHLCV candles (1m and 1h)
     - Fetches order book
     - Runs on configurable interval
     """
@@ -40,29 +41,47 @@ class RESTPoller:
         # Track last poll time per symbol
         self.last_poll: dict = {}
 
+        # Store 1H candles separately
+        self.candles_1h: Dict[str, list] = {}
+
+        # HTF poll counter (poll 1H less frequently)
+        self.htf_poll_counter = 0
+
     async def initialize_historical(self):
         """Fetch historical candles on startup to speed up warmup"""
-        logger.info("🔄 Fetching historical candles for warmup...")
+        logger.info("Fetching historical candles for warmup...")
 
         for symbol in self.symbols:
             try:
                 # Fetch last 500 1m candles (about 8 hours)
-                ohlcv = self.exchange.fetch_ohlcv(symbol, '1m', limit=500)
+                ohlcv_1m = self.exchange.fetch_ohlcv(symbol, '1m', limit=500)
 
-                if ohlcv:
-                    self.candle_store.initialize_historical(symbol, ohlcv)
-                    logger.info(f"✅ Loaded {len(ohlcv)} historical candles for {symbol}")
+                if ohlcv_1m:
+                    self.candle_store.initialize_historical(symbol, ohlcv_1m)
+                    logger.info(f"Loaded {len(ohlcv_1m)} 1m candles for {symbol}")
                 else:
-                    logger.warning(f"⚠️ No historical data for {symbol}")
+                    logger.warning(f"No 1m historical data for {symbol}")
+
+                # Also fetch 1H candles for HTF confirmation
+                await asyncio.sleep(0.2)
+                ohlcv_1h = self.exchange.fetch_ohlcv(symbol, '1h', limit=100)
+
+                if ohlcv_1h:
+                    self.candles_1h[symbol] = ohlcv_1h
+                    # Add to candle store for resampling
+                    self.candle_store.add_candles_bulk(symbol, ohlcv_1h)
+                    logger.info(f"Loaded {len(ohlcv_1h)} 1h candles for {symbol}")
 
             except Exception as e:
-                logger.error(f"❌ Error fetching historical data for {symbol}: {e}")
+                logger.error(f"Error fetching historical data for {symbol}: {e}")
 
             # Small delay to avoid rate limits
             await asyncio.sleep(0.5)
 
     async def poll_once(self):
         """Poll all symbols once"""
+        self.htf_poll_counter += 1
+
         for symbol in self.symbols:
             try:
                 # Fetch latest OHLCV (1m)
@@ -87,8 +106,15 @@ class RESTPoller:
                         ob_data.get('timestamp', int(time.time() * 1000))
                     )
 
+                # Fetch 1H candles less frequently (every 6 cycles = ~1 min)
+                if self.htf_poll_counter % 6 == 0:
+                    ohlcv_1h = self.exchange.fetch_ohlcv(symbol, '1h', limit=5)
+                    if ohlcv_1h:
+                        self.candles_1h[symbol] = ohlcv_1h
+                        logger.debug(f"Updated 1h candles for {symbol}")
+
             except Exception as e:
-                logger.error(f"❌ Error polling {symbol}: {e}")
+                logger.error(f"Error polling {symbol}: {e}")
 
     async def run(self):
         """Main polling loop"""
