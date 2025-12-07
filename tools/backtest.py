@@ -2,19 +2,26 @@
 """
 Backtesting Tool for ScalperBot
 Supports multiple timeframes (1m, 5m, 15m, 1H) and strategies
-Uses Binance API for free historical data
+Uses CCXT (MEXC/Binance) for historical data
 """
 import argparse
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
-import requests
 import time
 import sys
 
 # Add parent directory to path
 sys.path.insert(0, '/home/user/scalperbot')
+
+# Try to import ccxt for exchange data
+try:
+    import ccxt
+    HAS_CCXT = True
+except ImportError:
+    HAS_CCXT = False
+    print("Warning: ccxt not installed. Install with: pip install ccxt")
 
 
 class Backtester:
@@ -22,9 +29,10 @@ class Backtester:
     Multi-timeframe backtesting engine
     """
 
-    def __init__(self, strategy_mode: str = 'smart', timeframe: str = '15m'):
+    def __init__(self, strategy_mode: str = 'smart', timeframe: str = '15m', exchange: str = 'mexc'):
         self.strategy_mode = strategy_mode
         self.timeframe = timeframe
+        self.exchange_name = exchange
 
         # ATR-based TP/SL (adjustable)
         self.tp_atr_mult = 2.0  # Take profit = 2 ATR (more realistic)
@@ -41,76 +49,90 @@ class Backtester:
             '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '4h': 240
         }
 
-    def fetch_binance_data(self, symbol: str, timeframe: str, days: int) -> pd.DataFrame:
-        """Fetch historical OHLCV data from Binance (free)"""
-        # Convert symbol format: BTC/USDT -> BTCUSDT
-        binance_symbol = symbol.replace('/', '')
+        # Initialize CCXT exchange
+        self.exchange = None
+        if HAS_CCXT:
+            try:
+                if exchange == 'mexc':
+                    self.exchange = ccxt.mexc({'enableRateLimit': True})
+                elif exchange == 'binance':
+                    self.exchange = ccxt.binance({'enableRateLimit': True})
+                else:
+                    self.exchange = ccxt.mexc({'enableRateLimit': True})
+                print(f"Using {exchange.upper()} for historical data")
+            except Exception as e:
+                print(f"Error initializing exchange: {e}")
+
+    def fetch_data(self, symbol: str, timeframe: str, days: int) -> pd.DataFrame:
+        """Fetch historical OHLCV data using CCXT"""
+        if not self.exchange:
+            print("Error: No exchange initialized")
+            return pd.DataFrame()
 
         # Calculate time range
-        end_time = int(datetime.now().timestamp() * 1000)
         minutes_per_candle = self.tf_minutes.get(timeframe, 15)
         candles_needed = (days * 24 * 60) // minutes_per_candle
 
+        # Calculate since timestamp
+        since = int((datetime.now() - timedelta(days=days)).timestamp() * 1000)
+
         all_candles = []
-        current_end = end_time
 
         print(f"Fetching {days} days of {timeframe} data for {symbol}...")
 
-        while len(all_candles) < candles_needed:
-            url = "https://api.binance.com/api/v3/klines"
-            params = {
-                'symbol': binance_symbol,
-                'interval': timeframe,
-                'endTime': current_end,
-                'limit': 1000
-            }
+        try:
+            # Fetch in chunks (most exchanges limit to 1000 per request)
+            while len(all_candles) < candles_needed:
+                ohlcv = self.exchange.fetch_ohlcv(
+                    symbol,
+                    timeframe,
+                    since=since,
+                    limit=1000
+                )
 
-            try:
-                response = requests.get(url, params=params, timeout=30)
-                response.raise_for_status()
-                data = response.json()
-
-                if not data:
+                if not ohlcv:
                     break
 
-                all_candles = data + all_candles
-                current_end = data[0][0] - 1  # Move to before first candle
+                all_candles.extend(ohlcv)
+
+                if len(ohlcv) < 1000:
+                    break  # No more data
+
+                # Move since to after last candle
+                since = ohlcv[-1][0] + 1
 
                 if len(all_candles) % 5000 == 0:
                     print(f"  ... fetched {len(all_candles)} candles so far")
 
-                time.sleep(0.1)  # Rate limiting
+                time.sleep(0.2)  # Rate limiting
 
-            except Exception as e:
-                print(f"Error fetching data: {e}")
-                break
+        except Exception as e:
+            print(f"Error fetching data: {e}")
 
         if not all_candles:
             return pd.DataFrame()
 
         # Convert to DataFrame
         df = pd.DataFrame(all_candles, columns=[
-            'timestamp', 'open', 'high', 'low', 'close', 'volume',
-            'close_time', 'quote_volume', 'trades', 'taker_buy_base',
-            'taker_buy_quote', 'ignore'
+            'timestamp', 'open', 'high', 'low', 'close', 'volume'
         ])
 
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         for col in ['open', 'high', 'low', 'close', 'volume']:
             df[col] = df[col].astype(float)
 
-        df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
         df = df.drop_duplicates(subset=['timestamp']).sort_values('timestamp').reset_index(drop=True)
 
         # Limit to requested days
         df = df.tail(candles_needed)
 
-        print(f"  Fetched {len(df)} {timeframe} candles ({df['timestamp'].min()} to {df['timestamp'].max()})")
+        if not df.empty:
+            print(f"  Fetched {len(df)} {timeframe} candles ({df['timestamp'].min()} to {df['timestamp'].max()})")
         return df
 
     def fetch_htf_data(self, symbol: str, days: int) -> pd.DataFrame:
         """Fetch 1H data for HTF trend confirmation"""
-        return self.fetch_binance_data(symbol, '1h', days + 7)  # Extra days for EMA warmup
+        return self.fetch_data(symbol, '1h', days + 7)  # Extra days for EMA warmup
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate all technical indicators"""
@@ -417,7 +439,7 @@ class Backtester:
     def run_backtest(self, symbol: str, days: int = 30) -> Dict:
         """Run backtest for a single symbol"""
         # Fetch data
-        df = self.fetch_binance_data(symbol, self.timeframe, days)
+        df = self.fetch_data(symbol, self.timeframe, days)
         if df.empty:
             return {'error': f'No data for {symbol}'}
 
@@ -569,6 +591,9 @@ def main():
                         help='Take profit ATR multiplier (default: 2.0)')
     parser.add_argument('--sl-atr', type=float, default=1.0,
                         help='Stop loss ATR multiplier (default: 1.0)')
+    parser.add_argument('--exchange', type=str, default='mexc',
+                        choices=['mexc', 'binance'],
+                        help='Exchange for data (default: mexc)')
 
     args = parser.parse_args()
 
@@ -581,11 +606,12 @@ def main():
     print(f"Timeframe: {args.timeframe}")
     print(f"Period: {args.days} days")
     print(f"R:R Ratio: {args.tp_atr}:{args.sl_atr} (TP={args.tp_atr} ATR, SL={args.sl_atr} ATR)")
+    print(f"Exchange: {args.exchange.upper()}")
     print(f"Symbols: {symbols}")
     print(f"{'='*60}")
 
     # Run backtests
-    backtester = Backtester(strategy_mode=args.strategy, timeframe=args.timeframe)
+    backtester = Backtester(strategy_mode=args.strategy, timeframe=args.timeframe, exchange=args.exchange)
     backtester.tp_atr_mult = args.tp_atr
     backtester.sl_atr_mult = args.sl_atr
 
