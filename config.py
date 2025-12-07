@@ -24,9 +24,13 @@ class Settings(BaseSettings):
     # Trading mode
     dry_run: bool = True
 
-    # Trading pairs - Only profitable pairs from backtest optimization
-    # BNB/USDT: PF=1.14, +$19/month (optimized settings)
-    trading_pairs: List[str] = ["BNB/USDT"]
+    # Trading pairs - Profitable pairs from backtest optimization
+    # All use: TP=2.0x ATR, SL=0.8x ATR, Trail=0.9%
+    # XLM/USDT: PF=1.12, +$21/month (RSI<40)
+    # BNB/USDT: PF=1.14, +$19/month (RSI<40)
+    # XRP/USDT: PF=1.12, +$17/month (RSI<35 optimal, RSI<40 also works)
+    # Combined expected: ~$57/month
+    trading_pairs: List[str] = ["BNB/USDT", "XRP/USDT", "XLM/USDT"]
 
     # Strategy parameters
     strategy_interval: int = 60  # Run strategy every N seconds
