@@ -79,7 +79,7 @@ class ScalperBot:
         self.open_positions: Dict[str, Dict] = {}
 
         # Risk parameters
-        self.risk_per_trade_pct = 0.5  # Risk 0.5% per trade
+        self.risk_per_trade_pct = 1.5  # Risk 1.5% per trade (3x more aggressive)
         self.max_positions = settings.max_positions
         self.trade_cooldown = {}  # Symbol -> last trade time
 
