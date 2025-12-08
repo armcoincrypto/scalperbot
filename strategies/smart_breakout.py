@@ -1,10 +1,10 @@
 """
-Smart Breakout Strategy with HTF Confirmation
+Trend Following Strategy with HTF Confirmation
 Professional-grade entry/exit logic with:
 - Higher Timeframe (1H) trend confirmation
+- EMA crossover entries (EMA8 x EMA20)
 - ATR-based dynamic TP/SL/Trailing
 - RSI momentum filters
-- Volume confirmation
 - Risk-based position sizing
 """
 import pandas as pd
@@ -18,15 +18,13 @@ logger = logging.getLogger(__name__)
 
 class SmartBreakoutStrategy:
     """
-    Smart Breakout Strategy with HTF confirmation and ATR exits
+    Trend Following Strategy with HTF confirmation and ATR exits
 
     Entry Conditions:
     1. HTF (1H) trend UP (price > EMA20)
-    2. HTF RSI < 75 (not overbought)
-    3. LTF RSI 40-70 (momentum but not exhausted)
-    4. Breakout above recent high OR RSI bounce from oversold
-    5. Volume > 1.2x average
-    6. Green candle confirmation
+    2. EMA8 crosses above EMA20 (bullish crossover)
+    3. Price above EMA20
+    4. RSI 45-70 (momentum but not overbought)
 
     Exit Conditions:
     - Stop Loss: 1.0 x ATR below entry
@@ -42,9 +40,8 @@ class SmartBreakoutStrategy:
         self.htf_timeframe = '1h'
         self.ltf_timeframe = '15m'  # Can be 5m or 15m
         self.rsi_period = 14
-        self.ema_period = 20
-        self.volume_threshold = 1.2
-        self.breakout_lookback = 10
+        self.ema_fast = 8   # Fast EMA for crossover
+        self.ema_slow = 20  # Slow EMA for crossover
 
         # Exit parameters (ATR-based)
         self.sl_atr_mult = 1.0
@@ -52,9 +49,8 @@ class SmartBreakoutStrategy:
         self.trailing_start_atr = 1.0
         self.trailing_step_atr = 0.5
 
-        # Risk management
-        self.max_rsi_overbought = 75
-        self.rsi_entry_min = 40
+        # Risk management - TREND strategy RSI range
+        self.rsi_entry_min = 45
         self.rsi_entry_max = 70
 
         # Store for HTF data
@@ -146,7 +142,7 @@ class SmartBreakoutStrategy:
 
     def check_entry(self, symbol: str, df: pd.DataFrame) -> Tuple[bool, str, Dict]:
         """
-        Check all entry conditions
+        Check all entry conditions using TREND strategy (EMA crossover)
 
         Returns: (should_enter, reason, signal_details)
         """
@@ -160,14 +156,31 @@ class SmartBreakoutStrategy:
         # Get HTF context
         htf = self.get_htf_context(symbol)
 
-        # === HTF FILTERS ===
+        # === HTF FILTER ===
         if not htf['trend_up']:
             return False, f"HTF trend DOWN (price below EMA20)", {}
 
-        if htf['rsi'] > self.max_rsi_overbought:
-            return False, f"HTF RSI overbought: {htf['rsi']:.1f}", {}
+        # === EMA CROSSOVER CHECK ===
+        # EMA8 must cross above EMA20 (current bar)
+        ema8_now = row['ema8']
+        ema20_now = row['ema20']
+        ema8_prev = prev_row['ema8']
+        ema20_prev = prev_row['ema20']
 
-        # === LTF FILTERS ===
+        if pd.isna(ema8_now) or pd.isna(ema20_now) or pd.isna(ema8_prev) or pd.isna(ema20_prev):
+            return False, "EMA not available", {}
+
+        # Check for bullish crossover: EMA8 was below/equal EMA20, now above
+        ema_crossover = (ema8_prev <= ema20_prev) and (ema8_now > ema20_now)
+
+        if not ema_crossover:
+            return False, "No EMA crossover (waiting for EMA8 > EMA20)", {}
+
+        # === PRICE ABOVE EMA20 ===
+        if row['close'] <= ema20_now:
+            return False, f"Price below EMA20", {}
+
+        # === RSI FILTER ===
         rsi = row['rsi']
         if pd.isna(rsi):
             return False, "RSI not available", {}
@@ -175,41 +188,8 @@ class SmartBreakoutStrategy:
         if rsi < self.rsi_entry_min or rsi > self.rsi_entry_max:
             return False, f"RSI out of range: {rsi:.1f} (need {self.rsi_entry_min}-{self.rsi_entry_max})", {}
 
-        # Volume filter
-        vol_ratio = row['volume_ratio']
-        if pd.isna(vol_ratio) or vol_ratio < self.volume_threshold:
-            return False, f"Volume low: {vol_ratio:.2f}x (need {self.volume_threshold}x)", {}
-
-        # === ENTRY TRIGGER ===
-        entry_triggered = False
-        entry_reason = ""
-
-        # Trigger 1: Breakout above recent high
-        lookback_df = df.iloc[-self.breakout_lookback-1:-1]
-        breakout_level = lookback_df['high'].max()
-        buffer = breakout_level * 0.001  # 0.1% buffer
-
-        if row['close'] > breakout_level + buffer:
-            entry_triggered = True
-            entry_reason = f"Breakout above {breakout_level:.4f}"
-
-        # Trigger 2: RSI bounce from oversold
-        if not entry_triggered:
-            recent_rsi = df.iloc[-6:-1]['rsi'].values
-            was_oversold = any(r < 35 for r in recent_rsi if not pd.isna(r))
-            rsi_rising = rsi > prev_row['rsi'] if not pd.isna(prev_row['rsi']) else False
-
-            if was_oversold and rsi_rising and rsi > 40:
-                entry_triggered = True
-                entry_reason = "RSI bounce from oversold"
-
-        if not entry_triggered:
-            return False, "No entry trigger (waiting for breakout or RSI bounce)", {}
-
-        # === CONFIRMATION ===
-        # Green candle
-        if row['close'] <= row['open']:
-            return False, "Waiting for green candle confirmation", {}
+        # === ENTRY CONFIRMED ===
+        entry_reason = "EMA8 crossed above EMA20"
 
         # Build signal
         atr = row['atr'] if not pd.isna(row['atr']) else row['close'] * 0.01
@@ -227,9 +207,9 @@ class SmartBreakoutStrategy:
             'trailing_start': entry_price + (atr * self.trailing_start_atr),
             'filters': {
                 'htf_trend': 'UP',
-                'htf_rsi': f"{htf['rsi']:.1f}",
+                'ema8': f"{ema8_now:.4f}",
+                'ema20': f"{ema20_now:.4f}",
                 'ltf_rsi': f"{rsi:.1f}",
-                'volume': f"{vol_ratio:.2f}x",
                 'trigger': entry_reason
             }
         }
@@ -237,8 +217,9 @@ class SmartBreakoutStrategy:
         logger.info(f"\n{'='*60}")
         logger.info(f"SIGNAL GENERATED: {symbol} BUY @ {entry_price:.4f}")
         logger.info(f"  Reason: {entry_reason}")
-        logger.info(f"  HTF: Trend UP, RSI={htf['rsi']:.1f}")
-        logger.info(f"  LTF: RSI={rsi:.1f}, Volume={vol_ratio:.2f}x")
+        logger.info(f"  HTF: Trend UP")
+        logger.info(f"  EMA8: {ema8_now:.4f} > EMA20: {ema20_now:.4f}")
+        logger.info(f"  RSI: {rsi:.1f}")
         logger.info(f"  SL: {signal['stop_loss']:.4f} ({self.sl_atr_mult} ATR)")
         logger.info(f"  TP: {signal['take_profit']:.4f} ({self.tp_atr_mult} ATR)")
         logger.info(f"{'='*60}")
