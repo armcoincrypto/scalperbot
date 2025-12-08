@@ -93,10 +93,18 @@ class OrderRouter:
         try:
             # Get market info
             market_info = self.get_market_info(symbol)
-            amount_precision = market_info.get('amount_precision', 8)
+            amount_precision = market_info.get('amount_precision', 5)
+
+            # Safety: ensure valid precision for crypto amounts
+            if amount_precision is None or amount_precision <= 0:
+                amount_precision = 5
+                logger.warning(f"Invalid amount_precision, using default: {amount_precision}")
+
+            logger.info(f"📊 Market info: precision={amount_precision}, quantity={quantity}")
 
             # Quantize amount
             quantized_amount = self.quantize_amount(quantity, amount_precision)
+            logger.info(f"📊 Quantized: {quantity} -> {quantized_amount}")
 
             # Get current price for validation
             mid_price = self.orderbook.get_mid_price(symbol)
