@@ -92,9 +92,6 @@ class SmartBreakoutStrategy:
         df['bb_upper'] = df['bb_middle'] + (2 * df['bb_std'])
         df['bb_lower'] = df['bb_middle'] - (2 * df['bb_std'])
 
-        # Highest high for breakout
-        df['highest_high'] = df['high'].rolling(window=self.breakout_lookback).max()
-
         return df
 
     def update_htf_data(self, symbol: str, df_1h: pd.DataFrame):
