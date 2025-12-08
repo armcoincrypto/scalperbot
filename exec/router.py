@@ -32,13 +32,32 @@ class OrderRouter:
             self.market_info_cache[symbol] = self.exchange.get_market_info(symbol)
         return self.market_info_cache[symbol]
 
-    def quantize_amount(self, amount: float, precision: int) -> float:
-        """Quantize amount to exchange precision"""
-        # Safety: never use precision 0 for crypto amounts (would round to 0)
-        if precision <= 0:
-            precision = 5  # Safe default for most crypto pairs
+    def quantize_amount(self, amount: float, precision) -> float:
+        """
+        Quantize amount to exchange precision
 
-        multiplier = 10 ** precision
+        precision can be:
+        - int: number of decimal places (e.g., 4 means 0.0001)
+        - float: step size (e.g., 0.0001 means 4 decimal places)
+        """
+        import math
+
+        # Handle CCXT precision format (can be step size like 0.0001)
+        if isinstance(precision, float) and 0 < precision < 1:
+            # Convert step size to decimal places: 0.0001 -> 4
+            decimal_places = int(round(-math.log10(precision)))
+        elif isinstance(precision, (int, float)) and precision >= 1:
+            # Already number of decimal places
+            decimal_places = int(precision)
+        else:
+            # Default: 5 decimal places
+            decimal_places = 5
+
+        # Safety: ensure reasonable precision
+        if decimal_places <= 0:
+            decimal_places = 5
+
+        multiplier = 10 ** decimal_places
         quantized = int(amount * multiplier) / multiplier
         return quantized
 
