@@ -34,8 +34,9 @@ class OrderRouter:
 
     def quantize_amount(self, amount: float, precision: int) -> float:
         """Quantize amount to exchange precision"""
-        if precision == 0:
-            return float(int(amount))
+        # Safety: never use precision 0 for crypto amounts (would round to 0)
+        if precision <= 0:
+            precision = 5  # Safe default for most crypto pairs
 
         multiplier = 10 ** precision
         quantized = int(amount * multiplier) / multiplier
