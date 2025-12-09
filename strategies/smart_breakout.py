@@ -139,7 +139,7 @@ class SmartBreakoutStrategy:
 
     def check_entry(self, symbol: str, df: pd.DataFrame) -> Tuple[bool, str, Dict]:
         """
-        Check all entry conditions using TREND strategy (EMA crossover)
+        Check all entry conditions using TREND strategy
 
         Returns: (should_enter, reason, signal_details)
         """
@@ -157,21 +157,16 @@ class SmartBreakoutStrategy:
         if not htf['trend_up']:
             return False, f"HTF trend DOWN (price below EMA20)", {}
 
-        # === EMA CROSSOVER CHECK ===
-        # EMA8 must cross above EMA20 (current bar)
+        # === EMA TREND CHECK ===
         ema8_now = row['ema8']
         ema20_now = row['ema20']
-        ema8_prev = prev_row['ema8']
-        ema20_prev = prev_row['ema20']
 
-        if pd.isna(ema8_now) or pd.isna(ema20_now) or pd.isna(ema8_prev) or pd.isna(ema20_prev):
+        if pd.isna(ema8_now) or pd.isna(ema20_now):
             return False, "EMA not available", {}
 
-        # Check for bullish crossover: EMA8 was below/equal EMA20, now above
-        ema_crossover = (ema8_prev <= ema20_prev) and (ema8_now > ema20_now)
-
-        if not ema_crossover:
-            return False, "No EMA crossover (waiting for EMA8 > EMA20)", {}
+        # Check for bullish trend: EMA8 > EMA20
+        if ema8_now <= ema20_now:
+            return False, "EMA8 below EMA20 (bearish)", {}
 
         # === PRICE ABOVE EMA20 ===
         if row['close'] <= ema20_now:
@@ -185,8 +180,18 @@ class SmartBreakoutStrategy:
         if rsi < self.rsi_entry_min or rsi > self.rsi_entry_max:
             return False, f"RSI out of range: {rsi:.1f} (need {self.rsi_entry_min}-{self.rsi_entry_max})", {}
 
+        # === PULLBACK ENTRY ===
+        # Only enter when price is close to EMA20 (within 0.5%) - avoid chasing
+        distance_from_ema = (row['close'] - ema20_now) / ema20_now * 100
+        if distance_from_ema > 0.5:
+            return False, f"Price too far from EMA20: {distance_from_ema:.2f}% (max 0.5%)", {}
+
+        # === GREEN CANDLE CONFIRMATION ===
+        if row['close'] <= row['open']:
+            return False, "Waiting for green candle", {}
+
         # === ENTRY CONFIRMED ===
-        entry_reason = "EMA8 crossed above EMA20"
+        entry_reason = f"Trend UP + pullback to EMA20 ({distance_from_ema:.2f}%)"
 
         # Build signal
         atr = row['atr'] if not pd.isna(row['atr']) else row['close'] * 0.01
@@ -207,6 +212,7 @@ class SmartBreakoutStrategy:
                 'ema8': f"{ema8_now:.4f}",
                 'ema20': f"{ema20_now:.4f}",
                 'ltf_rsi': f"{rsi:.1f}",
+                'distance': f"{distance_from_ema:.2f}%",
                 'trigger': entry_reason
             }
         }
