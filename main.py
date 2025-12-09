@@ -188,6 +188,7 @@ class ScalperBot:
             if settings.dry_run:
                 logger.info(f"[DRY_RUN] Would sell {quantity:.6f} {symbol}")
                 filled_price = exit_price
+                order_success = True
             else:
                 # Place sell order
                 order = self.router.place_market_order(symbol, 'sell', quantity)
@@ -197,40 +198,55 @@ class ScalperBot:
                     filled_price = self._get_filled_price(order, exit_price)
                     order_id = order.get('id', 'unknown')
                     logger.info(f"Order filled: {order_id} @ {filled_price:.4f}")
+                    order_success = True
                 else:
-                    logger.error("Sell order failed")
-                    return
+                    logger.error("Sell order failed - cleaning up position anyway")
+                    filled_price = exit_price
+                    order_success = False
 
-            # Update database with PnL
+            # Update database with PnL (even on failure, to close the position)
             actual_pnl = (filled_price - entry_price) * quantity
 
             if trade_id:
-                self.db.update_trade_pnl(trade_id, actual_pnl)
-                self.db.update_trade_status(trade_id, 'CLOSED')
-                self.db.update_daily_pnl(actual_pnl)
-                logger.info(f"Trade {trade_id} closed, PnL: ${actual_pnl:+.2f}")
+                self.db.update_trade_pnl(trade_id, actual_pnl if order_success else 0)
+                self.db.update_trade_status(trade_id, 'CLOSED' if order_success else 'FAILED')
+                if order_success:
+                    self.db.update_daily_pnl(actual_pnl)
+                logger.info(f"Trade {trade_id} closed, PnL: ${actual_pnl:+.2f}" if order_success else f"Trade {trade_id} marked FAILED")
 
-            # Log exit trade
-            self.db.log_trade(
-                symbol=symbol,
-                side='sell',
-                price=filled_price,
-                quantity=quantity,
-                notional=filled_price * quantity,
-                signal_reason=f"EXIT: {reason}",
-                status='CLOSED' if not settings.dry_run else 'DRY_RUN'
-            )
+            # Log exit trade (only if order succeeded)
+            if order_success:
+                self.db.log_trade(
+                    symbol=symbol,
+                    side='sell',
+                    price=filled_price,
+                    quantity=quantity,
+                    notional=filled_price * quantity,
+                    signal_reason=f"EXIT: {reason}",
+                    status='CLOSED' if not settings.dry_run else 'DRY_RUN'
+                )
 
-            # Clean up position tracking
+            # ALWAYS clean up position tracking (even on order failure)
+            # This prevents infinite exit signal loops
             self.strategy.close_position(symbol)
             if symbol in self.open_positions:
                 del self.open_positions[symbol]
+            logger.info(f"Position tracking cleaned up for {symbol}")
 
-            # Update equity
-            self.equity += actual_pnl
+            # Update equity only if order succeeded
+            if order_success:
+                self.equity += actual_pnl
 
         except Exception as e:
             logger.error(f"Error executing exit: {e}", exc_info=True)
+            # Still try to clean up position to prevent infinite loops
+            try:
+                self.strategy.close_position(symbol)
+                if symbol in self.open_positions:
+                    del self.open_positions[symbol]
+                logger.info(f"Position cleaned up after error for {symbol}")
+            except:
+                pass
 
     async def execute_entry(self, signal: Dict):
         """Execute an entry (buy) order"""
