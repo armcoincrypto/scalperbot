@@ -161,14 +161,19 @@ class ScalperBot:
         logger.info(f"{'*'*60}")
 
         try:
-            # Get position info
+            # Get position info from strategy
             pos_info = self.strategy.get_position_info(symbol)
-            if not pos_info and symbol in self.open_positions:
-                pos_info = self.open_positions[symbol]
 
-            # Calculate quantity to sell
+            # Get quantity from open_positions (strategy doesn't store quantity)
             quantity = 0
-            if pos_info:
+            if symbol in self.open_positions:
+                open_pos = self.open_positions[symbol]
+                quantity = open_pos.get('quantity', 0)
+                if quantity == 0 and 'notional' in open_pos:
+                    quantity = open_pos['notional'] / entry_price
+
+            # Fallback: try pos_info
+            if quantity == 0 and pos_info:
                 quantity = pos_info.get('quantity', 0)
                 if quantity == 0 and 'notional' in pos_info:
                     quantity = pos_info['notional'] / entry_price
