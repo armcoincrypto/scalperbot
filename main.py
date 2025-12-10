@@ -174,7 +174,13 @@ class ScalperBot:
                     quantity = pos_info['notional'] / entry_price
 
             if quantity <= 0:
-                logger.warning(f"No quantity to sell for {symbol}")
+                logger.warning(f"No quantity to sell for {symbol} - cleaning up ghost position")
+                # Still clean up position tracking to prevent infinite loops
+                self.strategy.close_position(symbol)
+                if symbol in self.open_positions:
+                    del self.open_positions[symbol]
+                if trade_id:
+                    self.db.update_trade_status(trade_id, 'FAILED')
                 return
 
             # Calculate PnL
