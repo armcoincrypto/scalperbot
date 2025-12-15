@@ -246,9 +246,48 @@ class PositionManager:
                     logger.error(f"❌ Failed to place exit order for {symbol}")
                     return False
 
-                # Get actual fill price if available
-                filled_price = order.get('average', exit_price)
-                exit_price = filled_price
+                # CRITICAL: Verify exit order actually filled
+                order_id = order.get('id')
+                order_status = order.get('status', '').lower()
+                filled_qty = order.get('filled', 0) or 0
+
+                if order_status in ['closed', 'filled'] and filled_qty > 0:
+                    # Order filled successfully
+                    filled_price = order.get('average') or order.get('price') or exit_price
+                    exit_price = filled_price
+                    logger.info(f"✅ Exit order verified FILLED: qty={filled_qty}, price={filled_price:.4f}")
+                elif order_status == 'open':
+                    # Order still open - shouldn't happen with market orders
+                    logger.warning(f"⚠️ Exit order still OPEN - waiting for fill: {order_id}")
+                    # Try to fetch updated status
+                    fetched = self.router.get_order_status(order_id, symbol)
+                    if fetched and fetched.get('status', '').lower() in ['closed', 'filled']:
+                        filled_price = fetched.get('average') or fetched.get('price') or exit_price
+                        exit_price = filled_price
+                        logger.info(f"✅ Exit order confirmed filled after fetch")
+                    else:
+                        logger.error(f"❌ Exit order did not fill - position remains open")
+                        return False
+                elif order_status in ['canceled', 'cancelled', 'rejected', 'expired']:
+                    logger.error(f"❌ Exit order {order_status.upper()}: {order_id}")
+                    return False
+                else:
+                    # Unknown status - fetch to verify
+                    logger.warning(f"⚠️ Unknown exit order status '{order_status}', verifying...")
+                    fetched = self.router.get_order_status(order_id, symbol) if order_id else None
+                    if fetched:
+                        order_status = fetched.get('status', '').lower()
+                        filled_qty = fetched.get('filled', 0) or 0
+                        if order_status in ['closed', 'filled'] and filled_qty > 0:
+                            filled_price = fetched.get('average') or fetched.get('price') or exit_price
+                            exit_price = filled_price
+                            logger.info(f"✅ Exit order verified after fetch: status={order_status}, filled={filled_qty}")
+                        else:
+                            logger.error(f"❌ Exit order not filled: status={order_status}, filled={filled_qty}")
+                            return False
+                    else:
+                        logger.error(f"❌ Could not verify exit order status")
+                        return False
             else:
                 logger.info(f"🔶 [DRY_RUN] Would place {side} order for {quantity:.6f} {symbol}")
 

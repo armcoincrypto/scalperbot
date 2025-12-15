@@ -344,11 +344,56 @@ class ScalperBot:
 
             if order:
                 order_id = order.get('id')
-                # Use 'or' to handle None values (MEXC sometimes returns None for these)
-                filled_price = order.get('average') or order.get('price') or price
-                filled_qty = order.get('filled') or order.get('amount') or quantity
 
-                self.db.update_trade_status(trade_id, 'FILLED', order_id)
+                # CRITICAL: Verify order actually filled before marking as FILLED
+                # Market orders should fill immediately, but we must verify
+                order_status = order.get('status', '').lower()
+                filled_qty = order.get('filled', 0) or 0
+
+                # Check if this is a dry run order (always considered filled)
+                is_dry_run = order.get('dry_run', False)
+
+                if is_dry_run:
+                    # Dry run orders are simulated - mark as filled
+                    filled_price = order.get('price') or price
+                    filled_qty = order.get('amount') or quantity
+                    logger.info(f"[DRY_RUN] Order simulated as filled")
+                    self.db.update_trade_status(trade_id, 'FILLED', order_id)
+                elif order_status in ['closed', 'filled'] and filled_qty > 0:
+                    # Order actually filled - proceed
+                    filled_price = order.get('average') or order.get('price') or price
+                    logger.info(f"Order verified FILLED: status={order_status}, filled_qty={filled_qty}")
+                    self.db.update_trade_status(trade_id, 'FILLED', order_id)
+                elif order_status == 'open':
+                    # Order still open (shouldn't happen for market orders)
+                    logger.warning(f"Market order still OPEN - waiting for fill: {order_id}")
+                    self.db.update_trade_status(trade_id, 'PENDING', order_id)
+                    # Don't open position yet - will need separate handling
+                    return
+                elif order_status in ['canceled', 'cancelled', 'rejected', 'expired']:
+                    # Order failed
+                    logger.error(f"Order {order_status.upper()}: {order_id}")
+                    self.db.update_trade_status(trade_id, 'FAILED', order_id)
+                    return
+                else:
+                    # Unknown status - fetch order to verify
+                    logger.warning(f"Unknown order status '{order_status}', fetching order details...")
+                    fetched_order = self.router.get_order_status(order_id, symbol)
+                    if fetched_order:
+                        order_status = fetched_order.get('status', '').lower()
+                        filled_qty = fetched_order.get('filled', 0) or 0
+                        if order_status in ['closed', 'filled'] and filled_qty > 0:
+                            filled_price = fetched_order.get('average') or fetched_order.get('price') or price
+                            logger.info(f"Order verified after fetch: status={order_status}, filled={filled_qty}")
+                            self.db.update_trade_status(trade_id, 'FILLED', order_id)
+                        else:
+                            logger.error(f"Order not filled after verification: status={order_status}, filled={filled_qty}")
+                            self.db.update_trade_status(trade_id, 'FAILED', order_id)
+                            return
+                    else:
+                        logger.error(f"Could not fetch order status for {order_id}")
+                        self.db.update_trade_status(trade_id, 'UNKNOWN', order_id)
+                        return
 
                 # Recalculate TP/SL with actual fill price
                 if 'targets' in signal and settings.smart_use_dynamic_targets:
