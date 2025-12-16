@@ -32,7 +32,7 @@ class SmartBreakoutStrategy:
         self.ema_period = 20  # For trend detection
         self.rsi_period = 14
         self.atr_period = 14
-        self.volume_multiplier = 1.2  # Volume must be 1.2x average (lowered from 1.5x)
+        self.volume_multiplier = 0.3  # Volume must be 0.3x average (lowered for more trades)
         self.breakout_lookback = 20  # Look for breakout over 20 bars
         self.rsi_oversold = 35  # Widened from 40
         self.rsi_overbought = 75  # Widened from 70
@@ -240,8 +240,8 @@ class SmartBreakoutStrategy:
         """
         Generate trading signal with all filters
         """
-        # Get 5m candles for primary analysis
-        df_5m = self.candle_store.get_candles(symbol, '5m', limit=100)
+        # Get 1m candles for primary analysis (matches backtest optimization)
+        df_5m = self.candle_store.get_candles(symbol, '1m', limit=100)
 
         if df_5m.empty or len(df_5m) < 30:
             logger.debug(f"{symbol}: Not enough 5m data")
