@@ -128,9 +128,9 @@ class SmartBreakoutStrategy:
 
     def check_volume_confirms_direction(self, df: pd.DataFrame) -> Tuple[bool, str]:
         """
-        FILTER 3: Volume confirms bullish direction
-        - Volume > 1.5x 20-period average
-        - Candle is green (close > open)
+        FILTER 3: Volume OR green candle (relaxed for more trades)
+        - Volume > 0.3x average OR candle is green
+        - Much more permissive to allow more trading opportunities
         """
         df = df.copy()
         df['vol_avg'] = df['volume'].rolling(window=20).mean()
@@ -142,7 +142,8 @@ class SmartBreakoutStrategy:
         is_green_candle = df.iloc[-1]['close'] > df.iloc[-1]['open']
         volume_surge = vol_ratio >= self.volume_multiplier
 
-        passed = volume_surge and is_green_candle
+        # RELAXED: Pass if EITHER volume is high OR candle is green
+        passed = volume_surge or is_green_candle
 
         msg = (f"VOLUME: {vol_ratio:.2f}x avg (need {self.volume_multiplier}x), "
                f"Candle={'GREEN ✅' if is_green_candle else 'RED ❌'}, "
