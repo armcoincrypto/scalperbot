@@ -347,7 +347,8 @@ class ScalperBot:
 
                 # CRITICAL: Verify order actually filled before marking as FILLED
                 # Market orders should fill immediately, but we must verify
-                order_status = order.get('status', '').lower()
+                # Note: MEXC may return status=None for market orders, so use 'or' to handle None
+                order_status = (order.get('status') or '').lower()
                 filled_qty = order.get('filled', 0) or 0
 
                 # Check if this is a dry run order (always considered filled)
@@ -380,7 +381,7 @@ class ScalperBot:
                     logger.warning(f"Unknown order status '{order_status}', fetching order details...")
                     fetched_order = self.router.get_order_status(order_id, symbol)
                     if fetched_order:
-                        order_status = fetched_order.get('status', '').lower()
+                        order_status = (fetched_order.get('status') or '').lower()
                         filled_qty = fetched_order.get('filled', 0) or 0
                         if order_status in ['closed', 'filled'] and filled_qty > 0:
                             filled_price = fetched_order.get('average') or fetched_order.get('price') or price
