@@ -228,7 +228,11 @@ class ScalperBot:
             if not current_price:
                 continue
 
-            # Calculate pullback percentage
+            # Calculate pullback percentage (guard against division by zero)
+            if breakout_price <= 0:
+                logger.warning(f"{symbol}: Invalid breakout_price={breakout_price}, skipping")
+                symbols_to_remove.append(symbol)
+                continue
             pullback_pct = ((breakout_price - current_price) / breakout_price) * 100
 
             logger.debug(f"{symbol}: Waiting for pullback. Current pullback: {pullback_pct:.2f}%")
@@ -400,10 +404,22 @@ class ScalperBot:
                 if 'targets' in signal and settings.smart_use_dynamic_targets:
                     # For smart breakout, recalculate based on ATR ratio
                     targets = signal['targets']
-                    price_diff_tp = targets['take_profit_price'] - signal['price']
-                    price_diff_sl = signal['price'] - targets['stop_loss_price']
-                    tp_price = filled_price + price_diff_tp
-                    sl_price = filled_price - price_diff_sl
+                    # Safe access with fallback to static TP/SL calculation
+                    target_tp = targets.get('take_profit_price')
+                    target_sl = targets.get('stop_loss_price')
+                    signal_price = signal.get('price', filled_price)
+
+                    if target_tp and target_sl and signal_price > 0:
+                        price_diff_tp = target_tp - signal_price
+                        price_diff_sl = signal_price - target_sl
+                        tp_price = filled_price + price_diff_tp
+                        sl_price = filled_price - price_diff_sl
+                    else:
+                        # Fallback to static calculation
+                        logger.warning(f"Invalid targets in signal, using static TP/SL")
+                        tp_sl = self.position_manager.calculate_tp_sl_prices(filled_price, side)
+                        tp_price = tp_sl['take_profit_price']
+                        sl_price = tp_sl['stop_loss_price']
                 else:
                     tp_sl = self.position_manager.calculate_tp_sl_prices(filled_price, side)
                     tp_price = tp_sl['take_profit_price']

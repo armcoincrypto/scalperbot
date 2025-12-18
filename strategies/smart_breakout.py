@@ -43,12 +43,17 @@ class SmartBreakoutStrategy:
         return series.ewm(span=period, adjust=False).mean()
 
     def calculate_rsi(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
-        """Calculate RSI"""
+        """Calculate RSI with protection against division by zero"""
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        # Replace 0 loss with small value to avoid division by zero
+        # When loss is 0, RSI should be 100 (all gains)
+        loss = loss.replace(0, 1e-10)
         rs = gain / loss
         rsi = 100 - (100 / (1 + rs))
+        # Fill any NaN/Inf values with neutral RSI
+        rsi = rsi.fillna(50).replace([np.inf, -np.inf], 50)
         return rsi
 
     def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -219,6 +224,18 @@ class SmartBreakoutStrategy:
         df = df.copy()
         df['atr'] = self.calculate_atr(df, self.atr_period)
         atr = df.iloc[-1]['atr']
+
+        # Guard against invalid entry_price
+        if not entry_price or entry_price <= 0:
+            logger.warning(f"Invalid entry_price={entry_price}, using default targets")
+            return {
+                'atr': atr,
+                'take_profit_price': 0,
+                'stop_loss_price': 0,
+                'take_profit_pct': 2.0,
+                'stop_loss_pct': 1.0,
+                'risk_reward': 2.0
+            }
 
         # TP = 2 ATR, SL = 0.8 ATR (optimized - tighter stop)
         tp_price = entry_price + (2 * atr)

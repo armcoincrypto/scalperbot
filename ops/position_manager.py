@@ -146,6 +146,11 @@ class PositionManager:
         highest_price = position.get('highest_price', entry_price)
         position_id = position['id']
 
+        # Guard against invalid entry_price
+        if not entry_price or entry_price <= 0:
+            logger.warning(f"Invalid entry_price={entry_price} for position {position_id}")
+            return False
+
         # Calculate current profit percentage
         if side == 'buy':
             profit_pct = ((current_price - entry_price) / entry_price) * 100
@@ -192,16 +197,21 @@ class PositionManager:
         side = position['side']
         notional = position['notional']
 
+        # Guard against invalid entry_price
+        if not entry_price or entry_price <= 0:
+            logger.error(f"Invalid entry_price={entry_price} in PnL calculation")
+            entry_price = exit_price  # Fallback to break-even
+
         if side == 'buy':
             # Long: profit if exit > entry
             price_diff = exit_price - entry_price
             pnl = price_diff * quantity
-            pnl_pct = (price_diff / entry_price) * 100
+            pnl_pct = (price_diff / entry_price) * 100 if entry_price > 0 else 0
         else:
             # Short: profit if exit < entry
             price_diff = entry_price - exit_price
             pnl = price_diff * quantity
-            pnl_pct = (price_diff / entry_price) * 100
+            pnl_pct = (price_diff / entry_price) * 100 if entry_price > 0 else 0
 
         # Estimate fees (MEXC is typically 0.1% taker)
         entry_fee = notional * 0.001
