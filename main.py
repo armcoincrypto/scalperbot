@@ -391,14 +391,25 @@ class ScalperBot:
                             filled_price = fetched_order.get('average') or fetched_order.get('price') or price
                             logger.info(f"Order verified after fetch: status={order_status}, filled={filled_qty}")
                             self.db.update_trade_status(trade_id, 'FILLED', order_id)
-                        else:
-                            logger.error(f"Order not filled after verification: status={order_status}, filled={filled_qty}")
+                        elif order_status in ['canceled', 'cancelled', 'rejected', 'expired']:
+                            # Order was explicitly rejected
+                            logger.error(f"Order {order_status.upper()} after fetch: {order_id}")
                             self.db.update_trade_status(trade_id, 'FAILED', order_id)
                             return
+                        else:
+                            # MEXC market orders fill instantly - if we got an order ID, assume filled
+                            # This handles the case where MEXC returns status=None
+                            logger.warning(f"Order status still unknown after fetch (status='{order_status}', filled={filled_qty})")
+                            logger.warning(f"MEXC market orders fill instantly - assuming filled at requested price")
+                            filled_price = fetched_order.get('average') or fetched_order.get('price') or price
+                            filled_qty = fetched_order.get('amount') or quantity
+                            self.db.update_trade_status(trade_id, 'FILLED', order_id)
                     else:
-                        logger.error(f"Could not fetch order status for {order_id}")
-                        self.db.update_trade_status(trade_id, 'UNKNOWN', order_id)
-                        return
+                        # Could not fetch but order was accepted - assume filled for market orders
+                        logger.warning(f"Could not fetch order {order_id}, assuming market order filled")
+                        filled_price = price
+                        filled_qty = quantity
+                        self.db.update_trade_status(trade_id, 'FILLED', order_id)
 
                 # Recalculate TP/SL with actual fill price
                 if 'targets' in signal and settings.smart_use_dynamic_targets:
