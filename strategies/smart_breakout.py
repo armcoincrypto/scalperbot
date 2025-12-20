@@ -109,25 +109,25 @@ class SmartBreakoutStrategy:
 
     def check_momentum_rsi(self, df: pd.DataFrame) -> Tuple[bool, str]:
         """
-        FILTER 2: RSI momentum confirmation
-        - RSI between 40-70 (not overbought, room to grow)
-        - RSI trending up
+        FILTER 2: RSI momentum confirmation (SIMPLIFIED per expert advice)
+        - RSI > 40 only (not oversold)
+        - RSI < 75 (not overbought)
+        - NO "rising" requirement - too noisy on 1m
         """
         df = df.copy()
         df['rsi'] = self.calculate_rsi(df, self.rsi_period)
 
         current_rsi = df.iloc[-1]['rsi']
-        rsi_3bars_ago = df.iloc[-4]['rsi'] if len(df) >= 4 else current_rsi
 
-        in_range = self.rsi_oversold <= current_rsi <= self.rsi_overbought
-        trending_up = current_rsi > rsi_3bars_ago
+        # Simplified: just check RSI is in tradeable range
+        # RSI > 40 means not oversold (buyers present)
+        # RSI < 75 means not overbought (room to grow)
+        in_range = 40 <= current_rsi <= 75
 
-        passed = in_range and trending_up
+        passed = in_range
 
-        msg = (f"RSI: {current_rsi:.1f} (range {self.rsi_oversold}-{self.rsi_overbought}), "
-               f"3bars_ago={rsi_3bars_ago:.1f}, "
-               f"{'IN RANGE ✅' if in_range else 'OUT OF RANGE ❌'}, "
-               f"{'RISING ✅' if trending_up else 'FALLING ❌'}")
+        msg = (f"RSI: {current_rsi:.1f} (need 40-75), "
+               f"{'IN RANGE ✅' if in_range else 'OUT OF RANGE ❌'}")
 
         return passed, msg
 
@@ -156,49 +156,49 @@ class SmartBreakoutStrategy:
 
         return passed, msg
 
-    def check_breakout_with_confirmation(self, df: pd.DataFrame) -> Tuple[bool, str, Dict]:
+    def check_pullback_entry(self, df: pd.DataFrame) -> Tuple[bool, str, Dict]:
         """
-        FILTER 4: Breakout with confirmation
-        - Previous candle broke above resistance
-        - Current candle holds above breakout level
+        FILTER 4: Pullback entry (REPLACED breakout per expert advice)
+        - Price pulled back to near EMA20
+        - Current candle is green (buyers stepping in)
+        - Much higher pass rate than breakout confirmation
         """
-        if len(df) < self.breakout_lookback + 2:
-            return False, "BREAKOUT: Not enough data", {}
+        if len(df) < 25:
+            return False, "PULLBACK: Not enough data", {}
 
-        # Find resistance level (highest high of lookback period, excluding last 2 candles)
-        lookback = df.iloc[-(self.breakout_lookback + 2):-2]
-        resistance = lookback['high'].max()
+        df = df.copy()
+        df['ema20'] = self.calculate_ema(df['close'], 20)
 
-        prev_candle = df.iloc[-2]
         current_candle = df.iloc[-1]
+        current_price = current_candle['close']
+        ema20 = df.iloc[-1]['ema20']
 
-        # Previous candle broke above resistance
-        prev_broke_out = prev_candle['close'] > resistance
+        # Price should be within 0.5% of EMA20 (pullback zone)
+        distance_pct = ((current_price - ema20) / ema20) * 100
+        near_ema = -0.3 <= distance_pct <= 0.5  # Allow slightly below to slightly above
 
-        # Current candle holds above (confirmation)
-        current_holds = current_candle['low'] > resistance * 0.998  # Allow 0.2% tolerance
+        # Current candle should be green (buyers stepping in)
+        is_green = current_candle['close'] > current_candle['open']
 
-        # Current price still above resistance
-        price_above = current_candle['close'] > resistance
+        # Either near EMA OR green candle (very permissive)
+        passed = near_ema or is_green
 
-        passed = prev_broke_out and current_holds and price_above
-
-        msg = (f"BREAKOUT: Resistance={resistance:.4f}, "
-               f"PrevClose={prev_candle['close']:.4f}, "
-               f"CurrentLow={current_candle['low']:.4f}, "
+        msg = (f"PULLBACK: Price {distance_pct:+.2f}% from EMA20, "
+               f"Candle={'GREEN ✅' if is_green else 'RED ❌'}, "
                f"{'CONFIRMED ✅' if passed else 'NOT CONFIRMED ❌'}")
 
         data = {
-            'resistance': resistance,
-            'breakout_candle_close': prev_candle['close']
+            'ema20': ema20,
+            'distance_pct': distance_pct
         }
 
         return passed, msg, data
 
     def check_not_extended(self, df: pd.DataFrame) -> Tuple[bool, str]:
         """
-        FILTER 5: Price not too extended from EMA
-        - Prevents buying when price already far from mean
+        FILTER 5: Price not too extended from EMA (RELAXED per expert advice)
+        - Allow up to 5 ATR from EMA (was 2 ATR)
+        - This filter was blocking good trades after breakouts
         """
         df = df.copy()
         df['ema20'] = self.calculate_ema(df['close'], 20)
@@ -208,11 +208,11 @@ class SmartBreakoutStrategy:
         ema = df.iloc[-1]['ema20']
         atr = df.iloc[-1]['atr']
 
-        # Price should not be more than 2 ATR above EMA
+        # Price should not be more than 5 ATR above EMA (relaxed from 2)
         distance_from_ema = (current_price - ema) / atr if atr > 0 else 0
-        not_extended = distance_from_ema < 2.0
+        not_extended = distance_from_ema < 5.0
 
-        msg = (f"EXTENSION: Price {distance_from_ema:.1f} ATR from EMA20, "
+        msg = (f"EXTENSION: Price {distance_from_ema:.1f} ATR from EMA20 (max 5), "
                f"{'OK ✅' if not_extended else 'TOO EXTENDED ❌'}")
 
         return not_extended, msg
@@ -237,9 +237,11 @@ class SmartBreakoutStrategy:
                 'risk_reward': 2.0
             }
 
-        # TP = 2 ATR, SL = 0.8 ATR (optimized - tighter stop)
-        tp_price = entry_price + (2 * atr)
-        sl_price = entry_price - (0.8 * atr)
+        # TP = 2.5 ATR, SL = 1.5 ATR (WIDENED per expert advice)
+        # Wider SL avoids getting stopped out by noise
+        # Target: SL ~0.35-0.45%, TP ~0.5-0.8%
+        tp_price = entry_price + (2.5 * atr)
+        sl_price = entry_price - (1.5 * atr)
 
         # Calculate percentages
         tp_pct = ((tp_price - entry_price) / entry_price) * 100
@@ -294,11 +296,11 @@ class SmartBreakoutStrategy:
             logger.info(f"{'='*70}\n")
             return None
 
-        # Filter 4: Breakout Confirmation
-        breakout_pass, breakout_msg, breakout_data = self.check_breakout_with_confirmation(df_5m)
-        logger.info(f"  [4] {breakout_msg}")
-        if not breakout_pass:
-            logger.info(f"  ❌ REJECTED: Breakout not confirmed")
+        # Filter 4: Pullback Entry (REPLACED breakout per expert advice)
+        pullback_pass, pullback_msg, pullback_data = self.check_pullback_entry(df_5m)
+        logger.info(f"  [4] {pullback_msg}")
+        if not pullback_pass:
+            logger.info(f"  ❌ REJECTED: Pullback entry not confirmed")
             logger.info(f"{'='*70}\n")
             return None
 
@@ -326,15 +328,15 @@ class SmartBreakoutStrategy:
             'action': 'BUY',
             'price': entry_price,
             'timestamp': df_5m.iloc[-1]['timestamp'],
-            'reason': 'Smart Breakout - All 5 filters passed',
+            'reason': 'Smart Pullback - All 5 filters passed',
             'targets': targets,
             'htf_data': htf_data,
-            'breakout_data': breakout_data,
+            'pullback_data': pullback_data,
             'filters': {
                 'htf_trend': htf_msg,
                 'rsi_momentum': rsi_msg,
                 'volume_confirm': vol_msg,
-                'breakout_confirm': breakout_msg,
+                'pullback_entry': pullback_msg,
                 'not_extended': ext_msg
             }
         }
