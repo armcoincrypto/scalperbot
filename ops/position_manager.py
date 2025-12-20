@@ -240,6 +240,17 @@ class PositionManager:
         position_id = position['id']
         trade_id = position['trade_id']
 
+        # CRITICAL: Check if already closing (prevents duplicate close attempts)
+        current_status = position.get('status', 'OPEN')
+        if current_status == 'CLOSING':
+            logger.debug(f"{symbol}: Already closing, skipping duplicate attempt")
+            return False
+        if current_status == 'CLOSED':
+            logger.debug(f"{symbol}: Already closed, skipping")
+            return False
+
+        # Mark as CLOSING immediately to prevent concurrent close attempts
+        self.db.update_position_status(position_id, 'CLOSING')
         logger.info(f"\n{'*'*60}")
         logger.info(f"🔻 CLOSING POSITION: {symbol}")
         logger.info(f"   Reason: {reason}")
@@ -254,6 +265,7 @@ class PositionManager:
                 order = self.router.place_market_order(symbol, side, quantity)
                 if not order:
                     logger.error(f"❌ Failed to place exit order for {symbol}")
+                    self.db.update_position_status(position_id, 'OPEN')  # Reset to allow retry
                     return False
 
                 # CRITICAL: Verify exit order actually filled
@@ -277,9 +289,11 @@ class PositionManager:
                         logger.info(f"✅ Exit order confirmed filled after fetch")
                     else:
                         logger.error(f"❌ Exit order did not fill - position remains open")
+                        self.db.update_position_status(position_id, 'OPEN')  # Reset to allow retry
                         return False
                 elif order_status in ['canceled', 'cancelled', 'rejected', 'expired']:
                     logger.error(f"❌ Exit order {order_status.upper()}: {order_id}")
+                    self.db.update_position_status(position_id, 'OPEN')  # Reset to allow retry
                     return False
                 else:
                     # Unknown status - fetch to verify
@@ -294,9 +308,11 @@ class PositionManager:
                             logger.info(f"✅ Exit order verified after fetch: status={order_status}, filled={filled_qty}")
                         else:
                             logger.error(f"❌ Exit order not filled: status={order_status}, filled={filled_qty}")
+                            self.db.update_position_status(position_id, 'OPEN')  # Reset to allow retry
                             return False
                     else:
                         logger.error(f"❌ Could not verify exit order status")
+                        self.db.update_position_status(position_id, 'OPEN')  # Reset to allow retry
                         return False
             else:
                 logger.info(f"🔶 [DRY_RUN] Would place {side} order for {quantity:.6f} {symbol}")
@@ -335,6 +351,7 @@ class PositionManager:
 
         except Exception as e:
             logger.error(f"❌ Error closing position: {e}", exc_info=True)
+            self.db.update_position_status(position_id, 'OPEN')  # Reset to allow retry
             return False
 
     async def check_all_positions(self) -> List[Dict[str, Any]]:

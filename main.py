@@ -268,9 +268,11 @@ class ScalperBot:
         action = signal['action']
         price = signal['price']
 
-        logger.info(f"\n{'*'*60}")
-        logger.info(f"EXECUTING SIGNAL: {action} {symbol} @ {price:.4f}")
-        logger.info(f"{'*'*60}")
+        # CRITICAL: Check if we already have a position for this symbol
+        # This is the definitive guard before any trade execution
+        if self.position_sizer.has_position(symbol):
+            logger.debug(f"{symbol}: Already have position, skipping execute_signal")
+            return
 
         try:
             # Determine stop loss for position sizing
@@ -294,6 +296,10 @@ class ScalperBot:
             quantity = pos_size['quantity']
             notional_usd = pos_size['notional_usd']
 
+            # Log AFTER all checks pass - this means we ARE executing
+            logger.info(f"\n{'*'*60}")
+            logger.info(f"EXECUTING SIGNAL: {action} {symbol} @ {price:.4f}")
+            logger.info(f"{'*'*60}")
             logger.info(f"Position size: {quantity:.6f} {symbol.split('/')[0]} (${notional_usd:.2f}) [{pos_size['sizing_method']}]")
 
             # Calculate TP/SL prices

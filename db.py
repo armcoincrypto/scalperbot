@@ -255,6 +255,13 @@ class TradeDB:
         """, (highest_price, trailing_stop_price, position_id))
         self.conn.commit()
 
+    def update_position_status(self, position_id: int, status: str):
+        """Update position status (OPEN, CLOSING, CLOSED)"""
+        self.conn.execute("""
+            UPDATE positions SET status = ? WHERE id = ?
+        """, (status, position_id))
+        self.conn.commit()
+
     def get_position_by_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Get open position for a specific symbol"""
         cursor = self.conn.execute("""
