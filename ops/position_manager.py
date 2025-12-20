@@ -33,6 +33,9 @@ class PositionManager:
         self.trail_offset_pct = settings.trail_offset_pct
         self.max_hold_hours = settings.max_hold_hours
 
+        # In-memory lock to prevent duplicate close attempts
+        self._closing_positions: set = set()
+
     def calculate_tp_sl_prices(self, entry_price: float, side: str) -> Dict[str, float]:
         """Calculate take profit and stop loss prices"""
         if side == 'buy':
@@ -240,16 +243,16 @@ class PositionManager:
         position_id = position['id']
         trade_id = position['trade_id']
 
-        # CRITICAL: Check if already closing (prevents duplicate close attempts)
-        current_status = position.get('status', 'OPEN')
-        if current_status == 'CLOSING':
-            logger.debug(f"{symbol}: Already closing, skipping duplicate attempt")
-            return False
-        if current_status == 'CLOSED':
-            logger.debug(f"{symbol}: Already closed, skipping")
+        # CRITICAL: In-memory lock to prevent duplicate close attempts
+        # DB status check doesn't work because get_open_positions filters by OPEN
+        if position_id in self._closing_positions:
+            logger.debug(f"{symbol}: Already closing (in-memory lock), skipping")
             return False
 
-        # Mark as CLOSING immediately to prevent concurrent close attempts
+        # Add to in-memory lock immediately
+        self._closing_positions.add(position_id)
+
+        # Also mark in DB for persistence
         self.db.update_position_status(position_id, 'CLOSING')
         logger.info(f"\n{'*'*60}")
         logger.info(f"🔻 CLOSING POSITION: {symbol}")
@@ -265,6 +268,7 @@ class PositionManager:
                 order = self.router.place_market_order(symbol, side, quantity)
                 if not order:
                     logger.error(f"❌ Failed to place exit order for {symbol}")
+                    self._closing_positions.discard(position_id)  # Remove lock
                     self.db.update_position_status(position_id, 'OPEN')  # Reset to allow retry
                     return False
 
@@ -289,10 +293,12 @@ class PositionManager:
                         logger.info(f"✅ Exit order confirmed filled after fetch")
                     else:
                         logger.error(f"❌ Exit order did not fill - position remains open")
+                        self._closing_positions.discard(position_id)  # Remove lock
                         self.db.update_position_status(position_id, 'OPEN')  # Reset to allow retry
                         return False
                 elif order_status in ['canceled', 'cancelled', 'rejected', 'expired']:
                     logger.error(f"❌ Exit order {order_status.upper()}: {order_id}")
+                    self._closing_positions.discard(position_id)  # Remove lock
                     self.db.update_position_status(position_id, 'OPEN')  # Reset to allow retry
                     return False
                 else:
@@ -308,10 +314,12 @@ class PositionManager:
                             logger.info(f"✅ Exit order verified after fetch: status={order_status}, filled={filled_qty}")
                         else:
                             logger.error(f"❌ Exit order not filled: status={order_status}, filled={filled_qty}")
+                            self._closing_positions.discard(position_id)  # Remove lock
                             self.db.update_position_status(position_id, 'OPEN')  # Reset to allow retry
                             return False
                     else:
                         logger.error(f"❌ Could not verify exit order status")
+                        self._closing_positions.discard(position_id)  # Remove lock
                         self.db.update_position_status(position_id, 'OPEN')  # Reset to allow retry
                         return False
             else:
@@ -347,10 +355,12 @@ class PositionManager:
             self.db.update_trade_status(trade_id, 'CLOSED')
 
             logger.info(f"✅ Position closed successfully")
+            self._closing_positions.discard(position_id)  # Remove lock (position is now CLOSED)
             return True
 
         except Exception as e:
             logger.error(f"❌ Error closing position: {e}", exc_info=True)
+            self._closing_positions.discard(position_id)  # Remove lock
             self.db.update_position_status(position_id, 'OPEN')  # Reset to allow retry
             return False
 
