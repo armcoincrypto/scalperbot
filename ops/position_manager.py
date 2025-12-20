@@ -267,7 +267,35 @@ class PositionManager:
             if not settings.dry_run:
                 order = self.router.place_market_order(symbol, side, quantity)
                 if not order:
+                    # Check if this is an "Oversold" situation - asset already sold
+                    # This can happen if previous close succeeded at exchange but failed at verification
                     logger.error(f"❌ Failed to place exit order for {symbol}")
+
+                    # Check actual balance on exchange
+                    try:
+                        base_currency = symbol.split('/')[0]  # e.g., "XLM" from "XLM/USDT"
+                        balance = self.exchange.fetch_balance()
+                        available = balance.get(base_currency, {}).get('free', 0) or 0
+
+                        if available < quantity * 0.1:  # Less than 10% of position = already sold
+                            logger.warning(f"⚠️ {base_currency} balance is {available:.4f} - position appears already closed")
+                            logger.info(f"Marking position as CLOSED (asset already sold)")
+
+                            # Mark as closed with estimated PnL
+                            pnl_result = self.calculate_pnl(position, exit_price)
+                            self.db.close_position(
+                                position_id=position_id,
+                                exit_price=exit_price,
+                                exit_reason=f"{reason}_OVERSOLD_FIX",
+                                pnl=pnl_result['net_pnl'],
+                                fee=pnl_result['fee']
+                            )
+                            self.db.update_trade_status(trade_id, 'CLOSED')
+                            self._closing_positions.discard(position_id)
+                            return True  # Treat as success
+                    except Exception as balance_err:
+                        logger.warning(f"Could not check balance: {balance_err}")
+
                     self._closing_positions.discard(position_id)  # Remove lock
                     self.db.update_position_status(position_id, 'OPEN')  # Reset to allow retry
                     return False
