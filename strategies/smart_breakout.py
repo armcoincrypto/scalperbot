@@ -247,6 +247,22 @@ class SmartBreakoutStrategy:
         tp_pct = ((tp_price - entry_price) / entry_price) * 100
         sl_pct = ((entry_price - sl_price) / entry_price) * 100
 
+        # CRITICAL: Enforce minimum percentages per expert advice
+        # ATR on 1m candles can be tiny, causing TP/SL to be within noise
+        # Expert says: SL should be 0.35-0.45%, TP should be 0.5-0.8%
+        MIN_SL_PCT = 0.40  # Minimum stop loss percentage
+        MIN_TP_PCT = 0.60  # Minimum take profit percentage
+
+        if sl_pct < MIN_SL_PCT:
+            sl_pct = MIN_SL_PCT
+            sl_price = entry_price * (1 - MIN_SL_PCT / 100)
+            logger.info(f"  📏 SL was {((entry_price - (entry_price - 1.5*atr)) / entry_price * 100):.2f}%, enforcing minimum {MIN_SL_PCT}%")
+
+        if tp_pct < MIN_TP_PCT:
+            tp_pct = MIN_TP_PCT
+            tp_price = entry_price * (1 + MIN_TP_PCT / 100)
+            logger.info(f"  📏 TP was {((entry_price + 2.5*atr - entry_price) / entry_price * 100):.2f}%, enforcing minimum {MIN_TP_PCT}%")
+
         return {
             'atr': atr,
             'take_profit_price': tp_price,
