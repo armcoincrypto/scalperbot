@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     pullback_max_candles: int = 3  # Max candles to wait for pullback
 
     # Risk management
-    daily_loss_limit_pct: float = 3.0  # Stop trading if down 3% for the day
+    daily_loss_limit_pct: float = 10.0  # Stop trading if down 10% for the day
 
     # Cooldown (prevents overtrading chop)
     trade_cooldown_seconds: int = 300  # 5 minutes cooldown per symbol after trade close
