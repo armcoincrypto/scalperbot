@@ -55,6 +55,11 @@ class PositionSizer:
         self._cached_equity = None
         self._equity_cache_time = 0
 
+        # COOLDOWN: Prevent overtrading after position close
+        # Track last close time per symbol to avoid chop
+        self._last_close_time: Dict[str, float] = {}
+        self.cooldown_seconds = getattr(settings, 'trade_cooldown_seconds', 300)  # 5 minutes default
+
     def get_current_position_count(self) -> int:
         """Get current position count from database"""
         if self.db:
@@ -67,6 +72,42 @@ class PositionSizer:
             position = self.db.get_position_by_symbol(symbol)
             return position is not None
         return False
+
+    def record_position_close(self, symbol: str):
+        """Record when a position was closed (for cooldown tracking)"""
+        import time
+        self._last_close_time[symbol] = time.time()
+        logger.debug(f"{symbol}: Recorded close time for cooldown")
+
+    def is_in_cooldown(self, symbol: str) -> bool:
+        """Check if symbol is still in cooldown period after last close"""
+        import time
+        if symbol not in self._last_close_time:
+            return False
+
+        elapsed = time.time() - self._last_close_time[symbol]
+        remaining = self.cooldown_seconds - elapsed
+
+        if remaining > 0:
+            logger.debug(f"{symbol}: In cooldown, {remaining:.0f}s remaining")
+            return True
+        return False
+
+    def can_trade_symbol(self, symbol: str) -> tuple:
+        """
+        Check if we can trade a symbol (no position + not in cooldown)
+        Returns: (can_trade: bool, reason: str)
+        """
+        if self.has_position(symbol):
+            return False, f"Already have position in {symbol}"
+
+        if self.is_in_cooldown(symbol):
+            import time
+            elapsed = time.time() - self._last_close_time.get(symbol, 0)
+            remaining = self.cooldown_seconds - elapsed
+            return False, f"Cooldown active: {remaining:.0f}s remaining"
+
+        return True, "OK"
 
     def get_open_symbols(self) -> List[str]:
         """Get list of symbols with open positions"""

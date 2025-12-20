@@ -95,6 +95,9 @@ class Settings(BaseSettings):
     # Risk management
     daily_loss_limit_pct: float = 3.0  # Stop trading if down 3% for the day
 
+    # Cooldown (prevents overtrading chop)
+    trade_cooldown_seconds: int = 300  # 5 minutes cooldown per symbol after trade close
+
     # Position monitoring interval
     position_check_interval: int = 10  # Check positions every N seconds
 

@@ -135,6 +135,10 @@ class ScalperBot:
                 if closed:
                     logger.info(f"Closed {len(closed)} positions this cycle")
 
+                    # Record cooldown for closed positions
+                    for pos in closed:
+                        self.position_sizer.record_position_close(pos['symbol'])
+
                     # Show updated stats
                     stats = self.db.get_daily_stats()
                     logger.info(f"Daily stats: PnL=${stats['pnl']:.2f} | Win Rate={stats['win_rate']:.1f}%")
@@ -268,10 +272,10 @@ class ScalperBot:
         action = signal['action']
         price = signal['price']
 
-        # CRITICAL: Check if we already have a position for this symbol
-        # This is the definitive guard before any trade execution
-        if self.position_sizer.has_position(symbol):
-            logger.debug(f"{symbol}: Already have position, skipping execute_signal")
+        # CRITICAL: Check if we can trade this symbol (no position + not in cooldown)
+        can_trade, reason = self.position_sizer.can_trade_symbol(symbol)
+        if not can_trade:
+            logger.debug(f"{symbol}: Cannot trade - {reason}")
             return
 
         try:
