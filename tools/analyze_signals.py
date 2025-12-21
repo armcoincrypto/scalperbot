@@ -66,17 +66,19 @@ def fetch_historical_data(symbol: str, days: int = 30) -> pd.DataFrame:
     since = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
     all_candles = []
 
-    while True:
+    end_time = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    while since < end_time:
         try:
             candles = exchange.fetch_ohlcv(symbol, TIMEFRAME, since=since, limit=1000)
             if not candles:
                 break
             all_candles.extend(candles)
-            since = candles[-1][0] + 1
+            since = candles[-1][0] + 60000  # 1 minute in ms
 
             print(f"  Fetched {len(all_candles)} candles...", end='\r')
 
-            if len(candles) < 1000:
+            if len(candles) < 100:  # MEXC returns ~500 per request
                 break
             time.sleep(0.1)
         except Exception as e:
@@ -291,7 +293,7 @@ def analyze_winning_conditions(trades: List[Dict]):
     for hour in sorted(hourly.index):
         row = hourly.loc[hour]
         marker = "🟢" if row['win_rate'] >= 50 else "🔴" if row['win_rate'] < 35 else ""
-        print(f"{hour:02d}:00  | {int(row['trades']):>7} | {int(row['wins']):>5} | {row['win_rate']:>7.1f}% | {row['pnl']:>+7.1f}% {marker}")
+        print(f"{int(hour):02d}:00  | {int(row['trades']):>7} | {int(row['wins']):>5} | {row['win_rate']:>7.1f}% | {row['pnl']:>+7.1f}% {marker}")
 
     # Find optimal conditions
     print(f"\n{'='*70}")
