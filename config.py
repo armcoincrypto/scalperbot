@@ -95,6 +95,11 @@ class Settings(BaseSettings):
     # Risk management
     daily_loss_limit_pct: float = 10.0  # Stop trading if down 10% for the day
 
+    # Trading hours filter (based on performance data: 05:00-09:00 UTC = 92% WR)
+    trading_hours_enabled: bool = True  # Only trade during profitable hours
+    trading_hours_start: int = 5   # Start hour UTC (inclusive)
+    trading_hours_end: int = 10    # End hour UTC (exclusive) - trades 05:00-09:59
+
     # Cooldown (prevents overtrading chop)
     trade_cooldown_seconds: int = 300  # 5 minutes cooldown per symbol after trade close
 

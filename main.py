@@ -166,6 +166,17 @@ class ScalperBot:
                     await asyncio.sleep(settings.strategy_interval)
                     continue
 
+                # Check trading hours filter (data shows 05:00-09:00 UTC = 92% WR)
+                if settings.trading_hours_enabled:
+                    current_hour = datetime.utcnow().hour
+                    if not (settings.trading_hours_start <= current_hour < settings.trading_hours_end):
+                        logger.info(f"⏰ Outside trading hours ({settings.trading_hours_start}:00-{settings.trading_hours_end}:00 UTC). Current: {current_hour}:00 - monitoring only")
+                        # Still display data and monitor positions, just don't take new trades
+                        logger.info(self.candle_store.summary())
+                        logger.info(self.position_manager.get_positions_summary())
+                        await asyncio.sleep(settings.strategy_interval)
+                        continue
+
                 # Display data summary
                 logger.info(self.candle_store.summary())
                 logger.info(self.orderbook.summary())
