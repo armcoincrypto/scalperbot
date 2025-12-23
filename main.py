@@ -43,7 +43,16 @@ class ScalperBot:
     def __init__(self):
         logger.info("="*80)
         logger.info("ScalperBot v2.1 Initializing...")
-        logger.info(f"Mode: {'DRY_RUN' if settings.dry_run else 'LIVE'}")
+
+        # RESEARCH MODE - No real trades, discover WHY price moves
+        if getattr(settings, 'research_mode', False):
+            logger.info("🔬" * 30)
+            logger.info("🔬 RESEARCH MODE ACTIVE")
+            logger.info("🔬 NO REAL TRADES - Logging hypothetical entries only")
+            logger.info("🔬 Purpose: Discover WHY price moves, find real edge")
+            logger.info("🔬" * 30)
+        else:
+            logger.info(f"Mode: {'DRY_RUN' if settings.dry_run else 'LIVE'}")
         logger.info(f"Strategy: {settings.strategy_type.upper()}")
         logger.info(f"Trading pairs: {settings.trading_pairs}")
         logger.info(f"TP: {settings.take_profit_pct}% | SL: {settings.stop_loss_pct}%")
@@ -166,8 +175,9 @@ class ScalperBot:
                     await asyncio.sleep(settings.strategy_interval)
                     continue
 
-                # Check trading hours filter (data shows 05:00-09:00 UTC = 92% WR)
-                if settings.trading_hours_enabled:
+                # Check trading hours filter
+                # BYPASS in RESEARCH_MODE - we need data from ALL hours to understand WHY
+                if settings.trading_hours_enabled and not getattr(settings, 'research_mode', False):
                     current_hour = datetime.utcnow().hour
                     if not (settings.trading_hours_start <= current_hour < settings.trading_hours_end):
                         logger.info(f"⏰ Outside trading hours ({settings.trading_hours_start}:00-{settings.trading_hours_end}:00 UTC). Current: {current_hour}:00 - monitoring only")
@@ -176,6 +186,8 @@ class ScalperBot:
                         logger.info(self.position_manager.get_positions_summary())
                         await asyncio.sleep(settings.strategy_interval)
                         continue
+                elif getattr(settings, 'research_mode', False):
+                    logger.info(f"🔬 [RESEARCH MODE] Trading hours bypassed - collecting data 24/7")
 
                 # Display data summary
                 logger.info(self.candle_store.summary())
@@ -345,6 +357,36 @@ class ScalperBot:
             )
 
             logger.info(f"Trade logged to database: ID={trade_id}")
+
+            # RESEARCH MODE: Log hypothetical trade, don't execute
+            if getattr(settings, 'research_mode', False):
+                logger.info(f"\n{'🔬'*20}")
+                logger.info(f"[RESEARCH MODE] HYPOTHETICAL TRADE:")
+                logger.info(f"  Symbol: {symbol}")
+                logger.info(f"  Action: {action}")
+                logger.info(f"  Entry: {price:.4f}")
+                logger.info(f"  TP: {tp_price:.4f} (+{((tp_price-price)/price*100):.2f}%)")
+                logger.info(f"  SL: {sl_price:.4f} (-{((price-sl_price)/price*100):.2f}%)")
+                logger.info(f"  Size: ${notional_usd:.2f}")
+                logger.info(f"  Reason: {signal.get('reason', 'N/A')}")
+                logger.info(f"{'🔬'*20}\n")
+
+                # Store for analysis but mark as RESEARCH
+                self.db.update_trade_status(trade_id, 'RESEARCH')
+
+                # Open position for tracking (to see if TP/SL would have hit)
+                position_id = self.db.open_position(
+                    trade_id=trade_id,
+                    symbol=symbol,
+                    side=side,
+                    entry_price=price,
+                    quantity=quantity,
+                    notional=notional_usd,
+                    take_profit_price=tp_price,
+                    stop_loss_price=sl_price
+                )
+                logger.info(f"[RESEARCH] Tracking position ID={position_id} to see outcome")
+                return
 
             if settings.dry_run:
                 logger.info(f"[DRY_RUN] Would place {action} order for {quantity:.6f} {symbol}")

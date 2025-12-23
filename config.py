@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     # Trading mode
     dry_run: bool = True
 
+    # RESEARCH MODE: Discover edges, don't trade
+    # When True: NO real orders, only log hypothetical entries/exits
+    # Purpose: Stop losing money, start understanding WHY price moves
+    research_mode: bool = True
+
     # Trading pairs - Profitable pairs from backtest optimization
     # All use: TP=2.0x ATR, SL=0.8x ATR, Trail=0.9%
     # XLM/USDT: PF=1.12, +$21/month (RSI<40)
