@@ -21,6 +21,12 @@ from ops.pos_size import PositionSizer
 from ops.position_manager import PositionManager
 from risk.breaker import RiskBreaker
 
+# Research/Edge Discovery modules
+from analysis.research_db import get_research_db
+from analysis.displacement import DisplacementDetector
+from analysis.liquidity import LiquiditySweepDetector
+from analysis.regime import RegimeClassifier
+
 # Configure logging
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper()),
@@ -105,6 +111,19 @@ class ScalperBot:
         # Pullback tracking for better entries
         self.pending_signals = {}  # symbol -> {signal, breakout_price, candles_waited}
 
+        # Research/Edge Discovery components
+        if getattr(settings, 'research_mode', False):
+            self.research_db = get_research_db()
+            self.displacement_detector = DisplacementDetector()
+            self.liquidity_detector = LiquiditySweepDetector()
+            self.regime_classifier = RegimeClassifier()
+            logger.info("🔬 Research components initialized (DB, Displacement, Liquidity, Regime)")
+        else:
+            self.research_db = None
+            self.displacement_detector = None
+            self.liquidity_detector = None
+            self.regime_classifier = None
+
         # State
         self.running = False
         self.poller_task = None
@@ -157,6 +176,42 @@ class ScalperBot:
 
             await asyncio.sleep(settings.position_check_interval)
 
+    async def run_research_analysis(self):
+        """Run research analysis on current market data (RESEARCH_MODE only)"""
+        if not getattr(settings, 'research_mode', False):
+            return
+
+        for symbol in settings.trading_pairs:
+            try:
+                # Get candle data as DataFrame
+                df = self.candle_store.get_dataframe(symbol, '1m', limit=100)
+                if df is None or len(df) < 50:
+                    continue
+
+                # 1. Detect displacements
+                displacements = self.displacement_detector.process_candle_data(df, symbol)
+                if displacements:
+                    # Log to research database
+                    for disp in displacements:
+                        self.research_db.insert_displacement(disp)
+                    logger.info(f"🔬 [{symbol}] Found {len(displacements)} displacement(s)")
+
+                # 2. Detect liquidity sweeps
+                sweeps = self.liquidity_detector.process_candle_data(df, symbol)
+                if sweeps:
+                    for sweep in sweeps:
+                        self.research_db.insert_liquidity_event(sweep)
+                    logger.info(f"🔬 [{symbol}] Found {len(sweeps)} liquidity sweep(s)")
+
+                # 3. Classify regime
+                regime = self.regime_classifier.get_current_regime(df, symbol, log=False)
+                if regime.get('regime') != 'UNKNOWN':
+                    self.research_db.insert_regime(regime)
+                    logger.info(f"🔬 [{symbol}] Regime: {regime['regime']} ({regime['confidence']*100:.0f}%)")
+
+            except Exception as e:
+                logger.error(f"Research analysis error for {symbol}: {e}")
+
     async def trading_loop(self):
         """Main trading loop - runs strategy and executes trades"""
         logger.info(f"Trading loop started (interval: {settings.strategy_interval}s)")
@@ -195,6 +250,10 @@ class ScalperBot:
 
                 # Display position status
                 logger.info(self.position_manager.get_positions_summary())
+
+                # RESEARCH MODE: Run market analysis to collect data
+                if getattr(settings, 'research_mode', False):
+                    await self.run_research_analysis()
 
                 # Check pending pullback entries
                 await self.check_pending_entries()
