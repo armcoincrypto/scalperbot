@@ -184,7 +184,7 @@ class ScalperBot:
         for symbol in settings.trading_pairs:
             try:
                 # Get candle data as DataFrame
-                df = self.candle_store.get_dataframe(symbol, '1m', limit=100)
+                df = self.candle_store.get_candles(symbol, '1m', limit=100)
                 if df is None or len(df) < 50:
                     continue
 
