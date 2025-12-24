@@ -30,11 +30,47 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Tuple, Optional
-from scipy import stats
+import math
 import json
 import os
 
 from analysis.research_db import get_research_db
+
+
+def binomial_test(successes: int, trials: int, p: float = 0.5) -> float:
+    """
+    Simple binomial test implementation (no scipy needed).
+
+    Calculate p-value for one-sided test: P(X >= successes) under null hypothesis.
+    Uses normal approximation for large samples, exact for small.
+    """
+    if trials == 0:
+        return 1.0
+
+    observed_rate = successes / trials
+
+    # For large samples, use normal approximation
+    if trials >= 30:
+        # Z-score
+        se = math.sqrt(p * (1 - p) / trials)
+        if se == 0:
+            return 1.0
+        z = (observed_rate - p) / se
+        # One-sided p-value (P(Z > z))
+        # Using error function approximation
+        p_value = 0.5 * (1 - math.erf(z / math.sqrt(2)))
+        return max(0, min(1, p_value))
+
+    # For small samples, use exact binomial
+    # P(X >= k) = sum of P(X = i) for i = k to n
+    p_value = 0
+    for k in range(successes, trials + 1):
+        # Binomial coefficient: n! / (k! * (n-k)!)
+        coef = math.comb(trials, k)
+        prob = coef * (p ** k) * ((1 - p) ** (trials - k))
+        p_value += prob
+
+    return p_value
 
 # Minimum sample sizes for statistical validity
 MIN_SAMPLE_WEAK = 20      # Weak evidence
@@ -61,7 +97,7 @@ def calculate_confidence_level(sample_size: int, win_rate: float) -> Tuple[str, 
     # Binomial test: is win rate significantly different from 50%?
     wins = int(sample_size * win_rate)
     # One-sided test: is win rate > 50%?
-    p_value = stats.binom_test(wins, sample_size, 0.5, alternative='greater')
+    p_value = binomial_test(wins, sample_size, 0.5)
 
     if sample_size >= MIN_SAMPLE_STRONG and p_value < 0.05:
         return 'HIGH', p_value

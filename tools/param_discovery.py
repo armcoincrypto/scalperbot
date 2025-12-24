@@ -32,7 +32,7 @@ import json
 import os
 import ccxt
 import time
-from scipy import stats
+import math
 
 # Anti-curve-fitting settings
 MIN_TRADES_PER_PARAM = 30  # Minimum trades to consider a parameter set
