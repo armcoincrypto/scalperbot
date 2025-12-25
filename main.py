@@ -26,6 +26,7 @@ from analysis.research_db import get_research_db
 from analysis.displacement import DisplacementDetector
 from analysis.liquidity import LiquiditySweepDetector
 from analysis.regime import RegimeClassifier
+from analysis.retrace import RetraceAnalyzer
 
 # Configure logging
 logging.basicConfig(
@@ -117,12 +118,14 @@ class ScalperBot:
             self.displacement_detector = DisplacementDetector()
             self.liquidity_detector = LiquiditySweepDetector()
             self.regime_classifier = RegimeClassifier()
-            logger.info("🔬 Research components initialized (DB, Displacement, Liquidity, Regime)")
+            self.retrace_analyzer = RetraceAnalyzer()
+            logger.info("🔬 Research components initialized (DB, Displacement, Liquidity, Regime, Retrace)")
         else:
             self.research_db = None
             self.displacement_detector = None
             self.liquidity_detector = None
             self.regime_classifier = None
+            self.retrace_analyzer = None
 
         # State
         self.running = False
@@ -208,6 +211,33 @@ class ScalperBot:
                 if regime.get('regime') != 'UNKNOWN':
                     self.research_db.insert_regime(regime)
                     logger.info(f"🔬 [{symbol}] Regime: {regime['regime']} ({regime['confidence']*100:.0f}%)")
+
+                # 4. Analyze retraces (what happens after displacements)
+                # Need longer data for this
+                df_long = self.candle_store.get_candles(symbol, '1m', limit=500)
+                if df_long is not None and len(df_long) >= 100:
+                    retrace_results = self.retrace_analyzer.analyze_all_displacements(df_long, symbol)
+                    if retrace_results:
+                        for result in retrace_results:
+                            # Convert to DB format
+                            tf_data = result.get('timeframe_analysis', {})
+                            retrace_data = {
+                                'displacement_id': result.get('displacement_id', 0),
+                                'symbol': symbol,
+                                'direction': result.get('direction'),
+                                'entry_price': result.get('entry_price')
+                            }
+                            for tf in ['5', '15', '30', '60']:
+                                if tf in tf_data:
+                                    retrace_data[f'tf{tf}_max_favorable_pct'] = tf_data[tf].get('max_favorable_pct')
+                                    retrace_data[f'tf{tf}_max_adverse_pct'] = tf_data[tf].get('max_adverse_pct')
+                                    retrace_data[f'tf{tf}_final_change_pct'] = tf_data[tf].get('final_change_pct')
+                                    retrace_data[f'tf{tf}_continuation'] = 1 if tf_data[tf].get('continuation') else 0
+                            self.research_db.insert_retrace(retrace_data)
+                        logger.info(f"🔬 [{symbol}] Analyzed {len(retrace_results)} retrace(s)")
+
+                # 5. Analyze liquidity sweep outcomes
+                self.liquidity_detector.analyze_all_sweeps(df_long, symbol)
 
             except Exception as e:
                 logger.error(f"Research analysis error for {symbol}: {e}")
