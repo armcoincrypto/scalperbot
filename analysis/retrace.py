@@ -83,7 +83,24 @@ class RetraceAnalyzer:
         Returns:
             Analysis results dict, or None if not enough data
         """
-        disp_time = pd.to_datetime(displacement['timestamp'])
+        # Handle both millisecond timestamps and ISO datetime strings
+        ts = displacement['timestamp']
+        try:
+            if isinstance(ts, (int, float)):
+                # Millisecond timestamp
+                disp_time = pd.to_datetime(ts, unit='ms', utc=True)
+            elif isinstance(ts, str) and ts.isdigit():
+                # String that's actually a number (ms timestamp)
+                disp_time = pd.to_datetime(int(ts), unit='ms', utc=True)
+            elif isinstance(ts, str) and len(ts) > 12 and ts[:4].isdigit():
+                # ISO format string like "2025-12-25T20:56:00+00:00"
+                disp_time = pd.to_datetime(ts, utc=True)
+            else:
+                # Fallback - let pandas try to figure it out
+                disp_time = pd.to_datetime(ts)
+        except Exception as e:
+            logger.warning(f"Cannot parse timestamp '{ts}': {e}")
+            return None
         direction = displacement['direction']
         entry_price = displacement['close']
 
