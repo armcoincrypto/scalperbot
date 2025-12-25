@@ -433,6 +433,30 @@ class ScalperBot:
                 # Store for analysis but mark as RESEARCH
                 self.db.update_trade_status(trade_id, 'RESEARCH')
 
+                # Also log to research database for edge analysis
+                if self.research_db:
+                    # Get current regime for this symbol
+                    current_regime = None
+                    try:
+                        df = self.candle_store.get_candles(symbol, '1m', limit=100)
+                        if df is not None and len(df) >= 50:
+                            regime_data = self.regime_classifier.get_current_regime(df, symbol, log=False)
+                            current_regime = regime_data.get('regime')
+                    except:
+                        pass
+
+                    self.research_db.insert_simulated_trade({
+                        'symbol': symbol,
+                        'entry_timestamp': datetime.utcnow().isoformat(),
+                        'direction': 'LONG' if action == 'BUY' else 'SHORT',
+                        'entry_price': price,
+                        'take_profit_price': tp_price,
+                        'stop_loss_price': sl_price,
+                        'regime': current_regime,
+                        'entry_reason': signal.get('reason', 'Smart Breakout')
+                    })
+                    logger.info(f"[RESEARCH] Logged to research DB (regime={current_regime})")
+
                 # Open position for tracking (to see if TP/SL would have hit)
                 position_id = self.db.open_position(
                     trade_id=trade_id,

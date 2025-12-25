@@ -34,11 +34,11 @@ class DisplacementDetector:
         self.db_path = db_path
         self.displacements: List[Dict] = []
 
-        # Detection parameters
-        self.body_multiplier = 2.5      # Candle body > 2.5x average = displacement
-        self.volume_multiplier = 2.0    # Volume > 2x average = significant
+        # Detection parameters - relaxed for more sensitivity
+        self.body_multiplier = 1.5      # Candle body > 1.5x average = displacement
+        self.volume_multiplier = 1.3    # Volume > 1.3x average = significant
         self.range_lookback = 20        # Look for range breaks over 20 candles
-        self.min_displacement_pct = 0.3  # Minimum 0.3% move to qualify
+        self.min_displacement_pct = 0.15  # Minimum 0.15% move to qualify
 
         # Load existing data
         self._load_data()
