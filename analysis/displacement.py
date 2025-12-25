@@ -122,8 +122,19 @@ class DisplacementDetector:
             if row['displacement_score'] < 2:
                 continue
 
+            # Get timestamp - use 'timestamp' column if available, else index
+            if 'timestamp' in df.columns:
+                timestamp_val = row['timestamp']
+                # Convert ms timestamp to datetime string
+                if isinstance(timestamp_val, (int, float)):
+                    from datetime import datetime, timezone
+                    timestamp_str = datetime.fromtimestamp(timestamp_val / 1000, tz=timezone.utc).isoformat()
+                else:
+                    timestamp_str = str(timestamp_val)
+            else:
+                timestamp_str = str(row.name)
+
             # Skip if we already logged this timestamp
-            timestamp_str = str(row.name)
             if any(d['timestamp'] == timestamp_str and d['symbol'] == symbol
                    for d in self.displacements):
                 continue
