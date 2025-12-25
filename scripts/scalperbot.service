@@ -1,0 +1,16 @@
+[Unit]
+Description=ScalperBot Trading Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/user/scalperbot
+ExecStart=/usr/bin/python3 /home/user/scalperbot/main.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/scalperbot.log
+StandardError=append:/var/log/scalperbot.log
+
+[Install]
+WantedBy=multi-user.target
