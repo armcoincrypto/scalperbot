@@ -24,20 +24,30 @@ def main():
 
     displacements = []
     for row in cursor.fetchall():
+        # Parse displacement_type (stored as JSON or comma-separated)
+        dtype = row['displacement_type']
+        if dtype:
+            try:
+                dtype_list = json.loads(dtype) if dtype.startswith('[') else dtype.split(',')
+            except:
+                dtype_list = dtype.split(',')
+        else:
+            dtype_list = []
+
         disp = {
             'id': row['id'],
             'symbol': row['symbol'],
             'timestamp': row['timestamp'],
             'direction': row['direction'],
-            'open': row['open'],
-            'high': row['high'],
-            'low': row['low'],
-            'close': row['close'],
+            'open': row['open_price'],
+            'high': row['high_price'],
+            'low': row['low_price'],
+            'close': row['close_price'],
             'volume': row['volume'],
             'body_ratio': row['body_ratio'],
             'volume_ratio': row['volume_ratio'],
             'displacement_pct': row['displacement_pct'],
-            'displacement_type': row['displacement_type'].split(',') if row['displacement_type'] else [],
+            'displacement_type': dtype_list,
             'analyzed': False,  # Mark as not analyzed so retrace analyzer picks them up
             'continuation': None,
             'max_retrace_pct': None,
