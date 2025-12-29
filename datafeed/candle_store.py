@@ -178,8 +178,8 @@ class CandleStore:
 
         df = self.candles_1m[symbol].copy()
 
-        # Convert timestamp to datetime
-        df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
+        # Convert timestamp to datetime (UTC-aware for proper comparison)
+        df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
         df = df.set_index('datetime')
 
         # Map timeframe to pandas resample rule
