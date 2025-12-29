@@ -154,19 +154,32 @@ class CandleStore:
         """
         Get candles for a symbol and timeframe
         timeframe: '1m', '5m', '15m', '1h', etc.
+        Returns DataFrame with UTC-aware datetime index for proper timestamp comparisons.
         """
         if timeframe == '1m':
             df = self.candles_1m.get(symbol, pd.DataFrame())
-            if limit and not df.empty:
-                return df.iloc[-limit:].copy()
-            return df.copy()
+            if df.empty:
+                return df.copy()
+            # Convert to datetime index for proper timestamp comparisons
+            df = df.copy()
+            df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+            df = df.set_index('datetime')
+            if limit:
+                return df.iloc[-limit:]
+            return df
 
         # For 1h, return directly stored candles (more accurate than resampling)
         if timeframe == '1h':
             df = self.candles_1h.get(symbol, pd.DataFrame())
-            if limit and not df.empty:
-                return df.iloc[-limit:].copy()
-            return df.copy()
+            if df.empty:
+                return df.copy()
+            # Convert to datetime index for proper timestamp comparisons
+            df = df.copy()
+            df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+            df = df.set_index('datetime')
+            if limit:
+                return df.iloc[-limit:]
+            return df
 
         # For other timeframes, resample from 1m data
         return self._resample_candles(symbol, timeframe, limit)
