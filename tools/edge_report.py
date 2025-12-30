@@ -546,6 +546,244 @@ class EdgeReport:
 
         return {'has_data': True, 'findings': findings}
 
+    def analyze_context_conditions(self) -> Dict:
+        """
+        QUESTION 6: UNDER WHICH CONDITIONS do displacements reverse?
+        (Phase 7 - The Missing Layer)
+
+        This is where real edges hide:
+        - LOCATION: Extreme vs mid-range
+        - SPEED: Fast stop-run vs slow acceptance
+        - LIQUIDITY: With sweep vs without sweep
+        - FOLLOW-THROUGH: Failed to continue vs succeeded
+        """
+        print("\n" + "="*70)
+        print("ANALYSIS 6: CONTEXT CONDITIONS (THE MISSING LAYER)")
+        print("Question: UNDER WHICH CONDITIONS do displacements reverse?")
+        print("="*70)
+
+        contexts = self.db.get_displacement_contexts()
+
+        if not contexts or len(contexts) < 5:
+            print(f"⚠️ NO DATA: Only {len(contexts) if contexts else 0} context analyses")
+            print("   Need more displacements with context analysis")
+            return {'has_data': False}
+
+        df = pd.DataFrame(contexts)
+
+        # Get retrace data to link outcomes
+        retraces = self.db.get_retraces()
+        retrace_df = pd.DataFrame(retraces) if retraces else pd.DataFrame()
+
+        results = {}
+
+        # =====================================================
+        # ANALYSIS 6A: BY LOCATION
+        # =====================================================
+        print("\n📍 BY LOCATION (where in the range):")
+        print("-" * 40)
+
+        for location in ['EXTREME_HIGH', 'EXTREME_LOW', 'MID_RANGE']:
+            loc_df = df[df['location'] == location]
+            if len(loc_df) == 0:
+                continue
+
+            # Get outcomes by matching displacement_ids with retrace data
+            outcomes = []
+            for _, row in loc_df.iterrows():
+                disp_id = row.get('displacement_id')
+                if retrace_df is not None and len(retrace_df) > 0:
+                    retrace = retrace_df[retrace_df['displacement_id'] == disp_id]
+                    if len(retrace) > 0:
+                        cont = retrace.iloc[0].get('tf30_continuation', 0)
+                        # FADE wins if continuation FAILS
+                        fade_win = not cont
+                        outcomes.append({
+                            'outcome': 'WIN' if fade_win else 'LOSS',
+                            'pnl_pct': retrace.iloc[0].get('tf30_max_favorable_pct', 0.3) if fade_win
+                                       else -retrace.iloc[0].get('tf30_max_adverse_pct', 0.3)
+                        })
+
+            if outcomes:
+                metrics = calculate_edge_metrics(outcomes)
+                results[f'location_{location}'] = metrics
+
+                status = "✅" if metrics['has_edge'] else "❌"
+                print(f"\n  {location}:")
+                print(f"    Samples: {metrics['sample_size']}")
+                print(f"    FADE win rate: {metrics['win_rate']:.1f}%")
+                print(f"    Expectancy: {metrics['expectancy']:.3f}%")
+                print(f"    {status} {'EDGE' if metrics['has_edge'] else 'No edge'}")
+            else:
+                print(f"\n  {location}: No outcome data yet")
+
+        # =====================================================
+        # ANALYSIS 6B: BY SPEED
+        # =====================================================
+        print("\n⚡ BY SPEED (how fast the move):")
+        print("-" * 40)
+
+        for speed in ['FAST_STOPRUN', 'SLOW_ACCEPTANCE', 'NORMAL']:
+            speed_df = df[df['speed_type'] == speed]
+            if len(speed_df) == 0:
+                continue
+
+            outcomes = []
+            for _, row in speed_df.iterrows():
+                disp_id = row.get('displacement_id')
+                if retrace_df is not None and len(retrace_df) > 0:
+                    retrace = retrace_df[retrace_df['displacement_id'] == disp_id]
+                    if len(retrace) > 0:
+                        cont = retrace.iloc[0].get('tf30_continuation', 0)
+                        fade_win = not cont
+                        outcomes.append({
+                            'outcome': 'WIN' if fade_win else 'LOSS',
+                            'pnl_pct': retrace.iloc[0].get('tf30_max_favorable_pct', 0.3) if fade_win
+                                       else -retrace.iloc[0].get('tf30_max_adverse_pct', 0.3)
+                        })
+
+            if outcomes:
+                metrics = calculate_edge_metrics(outcomes)
+                results[f'speed_{speed}'] = metrics
+
+                status = "✅" if metrics['has_edge'] else "❌"
+                print(f"\n  {speed}:")
+                print(f"    Samples: {metrics['sample_size']}")
+                print(f"    FADE win rate: {metrics['win_rate']:.1f}%")
+                print(f"    Expectancy: {metrics['expectancy']:.3f}%")
+                print(f"    {status} {'EDGE' if metrics['has_edge'] else 'No edge'}")
+            else:
+                print(f"\n  {speed}: No outcome data yet")
+
+        # =====================================================
+        # ANALYSIS 6C: BY LIQUIDITY CONFLUENCE
+        # =====================================================
+        print("\n💧 BY LIQUIDITY (with/without sweep):")
+        print("-" * 40)
+
+        for has_sweep, label in [(1, 'WITH_SWEEP'), (0, 'WITHOUT_SWEEP')]:
+            sweep_df = df[df['has_liquidity_sweep'] == has_sweep]
+            if len(sweep_df) == 0:
+                continue
+
+            outcomes = []
+            for _, row in sweep_df.iterrows():
+                disp_id = row.get('displacement_id')
+                if retrace_df is not None and len(retrace_df) > 0:
+                    retrace = retrace_df[retrace_df['displacement_id'] == disp_id]
+                    if len(retrace) > 0:
+                        cont = retrace.iloc[0].get('tf30_continuation', 0)
+                        fade_win = not cont
+                        outcomes.append({
+                            'outcome': 'WIN' if fade_win else 'LOSS',
+                            'pnl_pct': retrace.iloc[0].get('tf30_max_favorable_pct', 0.3) if fade_win
+                                       else -retrace.iloc[0].get('tf30_max_adverse_pct', 0.3)
+                        })
+
+            if outcomes:
+                metrics = calculate_edge_metrics(outcomes)
+                results[f'liquidity_{label}'] = metrics
+
+                status = "✅" if metrics['has_edge'] else "❌"
+                print(f"\n  {label}:")
+                print(f"    Samples: {metrics['sample_size']}")
+                print(f"    FADE win rate: {metrics['win_rate']:.1f}%")
+                print(f"    Expectancy: {metrics['expectancy']:.3f}%")
+                print(f"    {status} {'EDGE' if metrics['has_edge'] else 'No edge'}")
+            else:
+                print(f"\n  {label}: No outcome data yet")
+
+        # =====================================================
+        # ANALYSIS 6D: BY FOLLOW-THROUGH
+        # =====================================================
+        print("\n🎯 BY FOLLOW-THROUGH (failed to continue):")
+        print("-" * 40)
+
+        for ft in ['FAILED', 'COMPRESSING', 'SUCCEEDED']:
+            ft_df = df[df['followthrough'] == ft]
+            if len(ft_df) == 0:
+                continue
+
+            outcomes = []
+            for _, row in ft_df.iterrows():
+                disp_id = row.get('displacement_id')
+                if retrace_df is not None and len(retrace_df) > 0:
+                    retrace = retrace_df[retrace_df['displacement_id'] == disp_id]
+                    if len(retrace) > 0:
+                        cont = retrace.iloc[0].get('tf30_continuation', 0)
+                        fade_win = not cont
+                        outcomes.append({
+                            'outcome': 'WIN' if fade_win else 'LOSS',
+                            'pnl_pct': retrace.iloc[0].get('tf30_max_favorable_pct', 0.3) if fade_win
+                                       else -retrace.iloc[0].get('tf30_max_adverse_pct', 0.3)
+                        })
+
+            if outcomes:
+                metrics = calculate_edge_metrics(outcomes)
+                results[f'followthrough_{ft}'] = metrics
+
+                status = "✅" if metrics['has_edge'] else "❌"
+                print(f"\n  {ft}:")
+                print(f"    Samples: {metrics['sample_size']}")
+                print(f"    FADE win rate: {metrics['win_rate']:.1f}%")
+                print(f"    Expectancy: {metrics['expectancy']:.3f}%")
+                print(f"    {status} {'EDGE' if metrics['has_edge'] else 'No edge'}")
+            else:
+                print(f"\n  {ft}: No outcome data yet")
+
+        # =====================================================
+        # COMBINED SIGNALS
+        # =====================================================
+        print("\n🔥 COMBINED SIGNAL ANALYSIS:")
+        print("-" * 40)
+
+        # Analyze where fade_signal = 1
+        fade_signals = df[df['fade_signal'] == 1]
+        if len(fade_signals) > 0:
+            outcomes = []
+            for _, row in fade_signals.iterrows():
+                disp_id = row.get('displacement_id')
+                if retrace_df is not None and len(retrace_df) > 0:
+                    retrace = retrace_df[retrace_df['displacement_id'] == disp_id]
+                    if len(retrace) > 0:
+                        cont = retrace.iloc[0].get('tf30_continuation', 0)
+                        fade_win = not cont
+                        outcomes.append({
+                            'outcome': 'WIN' if fade_win else 'LOSS',
+                            'pnl_pct': retrace.iloc[0].get('tf30_max_favorable_pct', 0.3) if fade_win
+                                       else -retrace.iloc[0].get('tf30_max_adverse_pct', 0.3)
+                        })
+
+            if outcomes:
+                metrics = calculate_edge_metrics(outcomes)
+                results['fade_signal'] = metrics
+
+                status = "✅" if metrics['has_edge'] else "❌"
+                print(f"\n  FADE SIGNALS (combined context):")
+                print(f"    Total signals: {len(fade_signals)}")
+                print(f"    With outcome data: {metrics['sample_size']}")
+                print(f"    Win rate: {metrics['win_rate']:.1f}%")
+                print(f"    Expectancy: {metrics['expectancy']:.3f}%")
+                print(f"    {status} {'🎯 EDGE EXISTS!' if metrics['has_edge'] else 'No edge yet'}")
+
+        # Find best conditions
+        print("\n" + "="*40)
+        print("📊 BEST CONDITIONS FOR FADE TRADES:")
+        print("="*40)
+
+        edges_by_condition = [(k, v) for k, v in results.items() if v.get('has_edge')]
+        if edges_by_condition:
+            edges_by_condition.sort(key=lambda x: x[1].get('expectancy', 0), reverse=True)
+            for condition, metrics in edges_by_condition[:3]:
+                print(f"\n  ✅ {condition}")
+                print(f"     Win rate: {metrics['win_rate']:.1f}%")
+                print(f"     Expectancy: {metrics['expectancy']:.3f}%")
+        else:
+            print("\n  ⚠️ No significant edges found in any condition yet")
+            print("     Collect more data to find WHERE the edge hides")
+
+        return {'has_data': True, 'results': results}
+
     def generate_full_report(self) -> Dict:
         """
         Generate complete edge discovery report.
@@ -566,7 +804,8 @@ class EdgeReport:
             'regime_expectancy': self.analyze_regime_expectancy(),
             'direction_failure': self.analyze_direction_failure(),
             'sweep_outcomes': self.analyze_sweep_outcomes(),
-            'win_conditions': self.analyze_win_conditions()
+            'win_conditions': self.analyze_win_conditions(),
+            'context_conditions': self.analyze_context_conditions()
         }
 
         # Final verdict
@@ -597,6 +836,14 @@ class EdgeReport:
                            if m.get('has_edge')]
             if regime_edges:
                 edges_found.append(f"Regime: {', '.join(regime_edges)}")
+
+        # Check context conditions (THE MISSING LAYER)
+        if results['context_conditions'].get('has_data'):
+            context_results = results['context_conditions'].get('results', {})
+            context_edges = [k for k, v in context_results.items() if v.get('has_edge')]
+            if context_edges:
+                for edge in context_edges[:3]:  # Top 3
+                    edges_found.append(f"Context: {edge}")
 
         # Print verdict
         if edges_found:

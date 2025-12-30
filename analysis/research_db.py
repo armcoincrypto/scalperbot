@@ -215,6 +215,55 @@ class ResearchDB:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_regime_symbol ON regimes(symbol)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sim_symbol ON simulated_trades(symbol)")
 
+        # DISPLACEMENT CONTEXT TABLE (Phase 7)
+        # The MISSING LAYER: WHERE, HOW FAST, and WHAT conditions
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS displacement_context (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                displacement_id INTEGER NOT NULL,
+                symbol TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                displacement_pct REAL,
+                -- LOCATION CONTEXT (where in the range)
+                location TEXT,  -- EXTREME_HIGH, EXTREME_LOW, MID_RANGE
+                position_in_range REAL,  -- 0-1
+                distance_from_high_pct REAL,
+                distance_from_low_pct REAL,
+                near_session_extreme INTEGER,  -- 0 or 1
+                session TEXT,  -- asian, london, newyork
+                -- VELOCITY CONTEXT (how fast)
+                velocity REAL,  -- % per minute
+                speed_type TEXT,  -- FAST_STOPRUN, SLOW_ACCEPTANCE, NORMAL
+                candles_to_form INTEGER,
+                avg_body_ratio REAL,
+                -- FOLLOW-THROUGH CONTEXT (did it continue)
+                followthrough TEXT,  -- SUCCEEDED, FAILED, COMPRESSING, PENDING
+                new_extreme_made INTEGER,  -- 0 or 1
+                compression_ratio REAL,
+                failure_candles INTEGER,
+                -- LIQUIDITY CONTEXT (stop run?)
+                has_liquidity_sweep INTEGER,  -- 0 or 1
+                sweep_type TEXT,
+                sweep_before_disp INTEGER,
+                time_to_sweep_minutes REAL,
+                -- COMPOSITE SIGNALS
+                fade_signal INTEGER,  -- 0 or 1
+                continuation_signal INTEGER,
+                signal_strength INTEGER,
+                signal_reasons TEXT,  -- JSON array
+                -- OUTCOME (filled later when retrace analyzed)
+                actual_outcome TEXT,  -- CONTINUED, REVERSED, CHOPPY
+                outcome_pnl_pct REAL,
+                FOREIGN KEY (displacement_id) REFERENCES displacements(id),
+                UNIQUE(displacement_id)
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ctx_symbol ON displacement_context(symbol)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ctx_location ON displacement_context(location)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ctx_speed ON displacement_context(speed_type)")
+
         conn.commit()
         conn.close()
 
@@ -330,6 +379,105 @@ class ResearchDB:
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
+
+    # ========== DISPLACEMENT CONTEXT METHODS ==========
+
+    def insert_displacement_context(self, data: Dict) -> int:
+        """Insert displacement context analysis (append-only)"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            location = data.get('location', {})
+            velocity = data.get('velocity', {})
+            followthrough = data.get('followthrough', {})
+            liquidity = data.get('liquidity', {})
+            signals = data.get('signals', {})
+
+            cursor.execute("""
+                INSERT OR IGNORE INTO displacement_context (
+                    displacement_id, symbol, timestamp, direction, displacement_pct,
+                    location, position_in_range, distance_from_high_pct, distance_from_low_pct,
+                    near_session_extreme, session,
+                    velocity, speed_type, candles_to_form, avg_body_ratio,
+                    followthrough, new_extreme_made, compression_ratio, failure_candles,
+                    has_liquidity_sweep, sweep_type, sweep_before_disp, time_to_sweep_minutes,
+                    fade_signal, continuation_signal, signal_strength, signal_reasons
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                data.get('displacement_id'),
+                data.get('symbol'),
+                data.get('timestamp'),
+                data.get('direction'),
+                data.get('displacement_pct'),
+                location.get('location'),
+                location.get('position_in_range'),
+                location.get('distance_from_high_pct'),
+                location.get('distance_from_low_pct'),
+                1 if location.get('near_session_extreme') else 0,
+                location.get('session'),
+                velocity.get('velocity'),
+                velocity.get('speed_type'),
+                velocity.get('candles_to_form'),
+                velocity.get('avg_body_ratio'),
+                followthrough.get('followthrough'),
+                1 if followthrough.get('new_extreme_made') else 0,
+                followthrough.get('compression_ratio'),
+                followthrough.get('failure_candles'),
+                1 if liquidity.get('has_liquidity_sweep') else 0,
+                liquidity.get('sweep_type'),
+                1 if liquidity.get('sweep_before_disp') else 0,
+                liquidity.get('time_to_sweep_minutes'),
+                1 if signals.get('fade_signal') else 0,
+                1 if signals.get('continuation_signal') else 0,
+                signals.get('signal_strength', 0),
+                json.dumps(signals.get('reasons', []))
+            ))
+            conn.commit()
+            return cursor.lastrowid
+        finally:
+            conn.close()
+
+    def get_displacement_contexts(self, symbol: str = None,
+                                   location: str = None,
+                                   speed_type: str = None) -> List[Dict]:
+        """Get displacement contexts with optional filters"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        query = "SELECT * FROM displacement_context WHERE 1=1"
+        params = []
+
+        if symbol:
+            query += " AND symbol = ?"
+            params.append(symbol)
+        if location:
+            query += " AND location = ?"
+            params.append(location)
+        if speed_type:
+            query += " AND speed_type = ?"
+            params.append(speed_type)
+
+        query += " ORDER BY created_at DESC"
+        cursor.execute(query, params)
+
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def update_context_outcome(self, displacement_id: int, outcome: str, pnl_pct: float):
+        """Update displacement context with actual outcome"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            UPDATE displacement_context
+            SET actual_outcome = ?, outcome_pnl_pct = ?
+            WHERE displacement_id = ? AND actual_outcome IS NULL
+        """, (outcome, pnl_pct, displacement_id))
+
+        conn.commit()
+        conn.close()
 
     # ========== LIQUIDITY EVENTS METHODS ==========
 

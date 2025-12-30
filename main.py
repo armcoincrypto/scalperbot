@@ -27,6 +27,7 @@ from analysis.displacement import DisplacementDetector
 from analysis.liquidity import LiquiditySweepDetector
 from analysis.regime import RegimeClassifier
 from analysis.retrace import RetraceAnalyzer
+from analysis.context import ContextAnalyzer
 
 # Configure logging
 logging.basicConfig(
@@ -119,13 +120,15 @@ class ScalperBot:
             self.liquidity_detector = LiquiditySweepDetector()
             self.regime_classifier = RegimeClassifier()
             self.retrace_analyzer = RetraceAnalyzer()
-            logger.info("🔬 Research components initialized (DB, Displacement, Liquidity, Regime, Retrace)")
+            self.context_analyzer = ContextAnalyzer()
+            logger.info("🔬 Research components initialized (DB, Displacement, Liquidity, Regime, Retrace, Context)")
         else:
             self.research_db = None
             self.displacement_detector = None
             self.liquidity_detector = None
             self.regime_classifier = None
             self.retrace_analyzer = None
+            self.context_analyzer = None
 
         # State
         self.running = False
@@ -238,6 +241,36 @@ class ScalperBot:
 
                 # 5. Analyze liquidity sweep outcomes
                 self.liquidity_detector.analyze_all_sweeps(df_long, symbol)
+
+                # 6. Analyze displacement CONTEXT (Phase 7 - the missing layer)
+                # This answers: UNDER WHICH CONDITIONS do displacements reverse?
+                if self.context_analyzer and df_long is not None:
+                    # Get recent displacements from JSON file for context analysis
+                    recent_disps = self.displacement_detector.displacements[-20:]  # Last 20
+                    symbol_disps = [d for d in recent_disps if d.get('symbol') == symbol]
+
+                    # Get liquidity events for confluence check
+                    liq_events = self.liquidity_detector.sweeps[-50:]  # Last 50
+
+                    for disp in symbol_disps:
+                        # Skip if already analyzed (check by displacement_id)
+                        existing = self.research_db.get_displacement_contexts(symbol=symbol)
+                        analyzed_ids = {c.get('displacement_id') for c in existing}
+                        if disp.get('id') in analyzed_ids:
+                            continue
+
+                        # Analyze context
+                        context = self.context_analyzer.analyze_displacement_context(
+                            df_long, disp, liq_events
+                        )
+
+                        if context:
+                            self.research_db.insert_displacement_context(context)
+                            signals = context.get('signals', {})
+                            if signals.get('fade_signal'):
+                                logger.info(f"🎯 [{symbol}] FADE SIGNAL: {', '.join(signals.get('reasons', []))}")
+                            elif signals.get('continuation_signal'):
+                                logger.info(f"📈 [{symbol}] CONTINUATION SIGNAL: {', '.join(signals.get('reasons', []))}")
 
             except Exception as e:
                 logger.error(f"Research analysis error for {symbol}: {e}")
