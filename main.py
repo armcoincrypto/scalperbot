@@ -245,12 +245,13 @@ class ScalperBot:
                 # 6. Analyze displacement CONTEXT (Phase 7 - the missing layer)
                 # This answers: UNDER WHICH CONDITIONS do displacements reverse?
                 if self.context_analyzer and df_long is not None:
-                    # Get recent displacements from JSON file for context analysis
-                    recent_disps = self.displacement_detector.displacements[-20:]  # Last 20
-                    symbol_disps = [d for d in recent_disps if d.get('symbol') == symbol]
+                    # Get ALL displacements for this symbol (not just last 20)
+                    # This ensures we analyze context for all historical displacements
+                    all_disps = self.displacement_detector.displacements
+                    symbol_disps = [d for d in all_disps if d.get('symbol') == symbol]
 
                     # Get liquidity events for confluence check
-                    liq_events = self.liquidity_detector.sweeps[-50:]  # Last 50
+                    liq_events = self.liquidity_detector.sweeps
 
                     for disp in symbol_disps:
                         # Skip if already analyzed (check by displacement_id)

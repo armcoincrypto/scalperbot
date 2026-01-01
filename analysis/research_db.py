@@ -733,7 +733,7 @@ class ResearchDB:
         cursor = conn.cursor()
 
         tables = ['displacements', 'retraces', 'liquidity_events', 'regimes',
-                  'simulated_trades', 'edge_metrics']
+                  'simulated_trades', 'edge_metrics', 'displacement_context']
 
         counts = {}
         for table in tables:
