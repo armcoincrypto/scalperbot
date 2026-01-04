@@ -87,11 +87,21 @@ class RetraceAnalyzer:
         ts = displacement['timestamp']
         try:
             if isinstance(ts, (int, float)):
-                # Millisecond timestamp
-                disp_time = pd.to_datetime(ts, unit='ms', utc=True)
-            elif isinstance(ts, str) and ts.isdigit():
-                # String that's actually a number (ms timestamp)
+                if ts > 1e12:  # Milliseconds (valid after year 2001)
+                    disp_time = pd.to_datetime(int(ts), unit='ms', utc=True)
+                elif ts > 1e9:  # Seconds
+                    disp_time = pd.to_datetime(int(ts), unit='s', utc=True)
+                else:
+                    # Too small - likely a row index, not a timestamp
+                    logger.warning(f"Skipping displacement {displacement.get('id')}: timestamp too small '{ts}'")
+                    return None
+            elif isinstance(ts, str) and ts.isdigit() and len(ts) >= 13:
+                # String that's actually a millisecond timestamp (13+ digits)
                 disp_time = pd.to_datetime(int(ts), unit='ms', utc=True)
+            elif isinstance(ts, str) and ts.isdigit():
+                # Short numeric string - likely a row index, skip
+                logger.warning(f"Skipping displacement {displacement.get('id')}: invalid timestamp '{ts}'")
+                return None
             elif isinstance(ts, str) and len(ts) > 12 and ts[:4].isdigit():
                 # ISO format string like "2025-12-25T20:56:00+00:00"
                 disp_time = pd.to_datetime(ts, utc=True)

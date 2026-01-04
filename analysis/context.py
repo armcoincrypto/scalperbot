@@ -351,12 +351,39 @@ class ContextAnalyzer:
         """
         # Find displacement index in dataframe
         disp_time = displacement.get('timestamp')
-        if isinstance(disp_time, str) and disp_time.isdigit():
-            disp_time = pd.to_datetime(int(disp_time), unit='ms', utc=True)
-        elif isinstance(disp_time, (int, float)):
-            disp_time = pd.to_datetime(int(disp_time), unit='ms', utc=True)
-        else:
-            disp_time = pd.to_datetime(disp_time, utc=True)
+
+        try:
+            # Handle various timestamp formats
+            if isinstance(disp_time, str):
+                if disp_time.isdigit() and len(disp_time) >= 13:
+                    # Millisecond timestamp as string (e.g., "1767524700000")
+                    disp_time = pd.to_datetime(int(disp_time), unit='ms', utc=True)
+                elif disp_time.isdigit():
+                    # Short numeric string - likely a row index, skip this displacement
+                    logger.warning(f"Skipping displacement {displacement.get('id')}: invalid timestamp '{disp_time}'")
+                    return None
+                else:
+                    # ISO format string
+                    disp_time = pd.to_datetime(disp_time, utc=True)
+            elif isinstance(disp_time, (int, float)):
+                if disp_time > 1e12:  # Milliseconds (after year 2001)
+                    disp_time = pd.to_datetime(int(disp_time), unit='ms', utc=True)
+                elif disp_time > 1e9:  # Seconds
+                    disp_time = pd.to_datetime(int(disp_time), unit='s', utc=True)
+                else:
+                    # Too small to be a valid timestamp
+                    logger.warning(f"Skipping displacement {displacement.get('id')}: timestamp too small '{disp_time}'")
+                    return None
+            else:
+                disp_time = pd.to_datetime(disp_time, utc=True)
+        except Exception as e:
+            logger.warning(f"Skipping displacement {displacement.get('id')}: cannot parse timestamp - {e}")
+            return None
+
+        # Ensure dataframe index is datetime
+        if not isinstance(df.index, pd.DatetimeIndex):
+            logger.warning(f"DataFrame index is not DatetimeIndex, skipping context analysis")
+            return None
 
         # Find closest index
         time_diffs = abs(df.index - disp_time)
