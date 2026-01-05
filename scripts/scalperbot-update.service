@@ -1,6 +1,0 @@
-[Unit]
-Description=ScalperBot Auto-Update Check
-
-[Service]
-Type=oneshot
-ExecStart=/bin/bash /home/user/scalperbot/scripts/auto_update.sh
