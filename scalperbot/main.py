@@ -13,7 +13,7 @@ import asyncio
 import argparse
 import signal
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from scalperbot.config import settings
 from scalperbot.log import setup_logging, get_logger
@@ -92,7 +92,7 @@ class ScalperBot:
     async def _daily_summary_loop(self):
         """Send daily summary at midnight UTC."""
         while self.running:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             # Calculate time until midnight
             tomorrow = (now + timedelta(days=1)).replace(
                 hour=0, minute=0, second=0, microsecond=0

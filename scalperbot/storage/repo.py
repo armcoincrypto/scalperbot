@@ -4,7 +4,7 @@ Clean separation of data access logic.
 """
 
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from scalperbot.storage.db import Database, get_database
 from scalperbot.log import get_logger
@@ -39,7 +39,7 @@ class PositionRepo:
             "peak_price": entry_price,
             "status": "OPEN",
             "entry_order_id": entry_order_id,
-            "entry_time": datetime.utcnow().isoformat()
+            "entry_time": datetime.now(timezone.utc).isoformat()
         })
 
     async def get_open(self, symbol: Optional[str] = None) -> List[Dict]:
@@ -104,7 +104,7 @@ class PositionRepo:
             "status": "CLOSED",
             "exit_price": exit_price,
             "exit_order_id": exit_order_id,
-            "exit_time": datetime.utcnow().isoformat(),
+            "exit_time": datetime.now(timezone.utc).isoformat(),
             "realized_pnl": pnl,
             "exit_reason": exit_reason
         }, "id = ?", (position_id,))
@@ -170,7 +170,7 @@ class TradeRepo:
     async def get_daily_summary(self, date: Optional[str] = None) -> Dict:
         """Get daily trading summary."""
         if date is None:
-            date = datetime.utcnow().strftime("%Y-%m-%d")
+            date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         trades = await self.db.fetch_all(
             """
@@ -220,7 +220,7 @@ class SignalRepo:
         Returns:
             Signal ID
         """
-        expires_at = (datetime.utcnow() + timedelta(minutes=ttl_minutes)).isoformat()
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)).isoformat()
 
         # Update existing signal or insert new
         existing = await self.db.fetch_one(
@@ -271,7 +271,7 @@ class CooldownRepo:
 
     async def set_cooldown(self, symbol: str, seconds: int):
         """Set cooldown for symbol."""
-        expires_at = (datetime.utcnow() + timedelta(seconds=seconds)).isoformat()
+        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
 
         await self.db.execute(
             """

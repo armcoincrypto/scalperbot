@@ -4,7 +4,7 @@ Uses aiogram 3.x for async Telegram API.
 """
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from aiogram import Bot, Dispatcher
@@ -106,7 +106,7 @@ class TelegramBot:
 
     def _should_notify(self, symbol: str) -> bool:
         """Check if notification should be sent (throttling)."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         last = self._last_notification.get(symbol)
 
         if last and (now - last).total_seconds() < self._notification_interval:
@@ -180,7 +180,7 @@ class TelegramBot:
 
         text = (
             f"{mode}DAILY SUMMARY\n"
-            f"Date: {datetime.utcnow().strftime('%Y-%m-%d')}\n"
+            f"Date: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}\n"
             f"Trades: {status['daily_trades']}\n"
             f"Win rate: {status['win_rate']:.1f}%\n"
             f"Total PnL: ${status['daily_pnl']:.2f}\n"

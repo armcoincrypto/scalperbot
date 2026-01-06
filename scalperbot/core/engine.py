@@ -3,7 +3,7 @@ Main trading engine - orchestrates all components.
 """
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from scalperbot.config import settings
@@ -84,7 +84,7 @@ class TradingEngine:
 
         await self.initialize()
         self.running = True
-        self.start_time = datetime.utcnow()
+        self.start_time = datetime.now(timezone.utc)
 
         logger.info("=" * 60)
         logger.info("TRADING ENGINE STARTED")
@@ -412,7 +412,7 @@ class TradingEngine:
 
         uptime = None
         if self.start_time:
-            uptime = str(datetime.utcnow() - self.start_time).split('.')[0]
+            uptime = str(datetime.now(timezone.utc) - self.start_time).split('.')[0]
 
         return {
             "running": self.running,

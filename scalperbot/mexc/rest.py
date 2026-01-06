@@ -6,7 +6,7 @@ Handles authentication, rate limiting, and retries.
 import asyncio
 import aiohttp
 from typing import Dict, List, Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 from scalperbot.config import settings
 from scalperbot.log import get_logger
@@ -262,7 +262,7 @@ class MEXCClient:
                        f"{quantity} {symbol} @ {price or 'MARKET'}")
             # Return fake order
             return Order(
-                order_id=f"DRY_{int(datetime.utcnow().timestamp()*1000)}",
+                order_id=f"DRY_{int(datetime.now(timezone.utc).timestamp()*1000)}",
                 symbol=symbol,
                 side=side,
                 type=order_type,
@@ -271,7 +271,7 @@ class MEXCClient:
                 orig_qty=quantity,
                 executed_qty=quantity,
                 cummulative_quote_qty=quantity * (price or 0),
-                time=int(datetime.utcnow().timestamp() * 1000)
+                time=int(datetime.now(timezone.utc).timestamp() * 1000)
             )
 
         # Get symbol info for precision
