@@ -22,6 +22,9 @@ class FilterResult:
     volume_24h: float
     bid_depth: float
     ask_depth: float
+    spread_ok: bool = True
+    volume_ok: bool = True
+    depth_ok: bool = True
     rejection_reason: Optional[str] = None
 
 
@@ -78,6 +81,7 @@ class SafetyFilters:
                 volume_24h=volume_24h,
                 bid_depth=bid_depth,
                 ask_depth=ask_depth,
+                spread_ok=False,
                 rejection_reason=f"Spread too wide: {spread_pct:.3f}% > {self.max_spread_pct}%"
             )
 
@@ -90,6 +94,7 @@ class SafetyFilters:
                 volume_24h=volume_24h,
                 bid_depth=bid_depth,
                 ask_depth=ask_depth,
+                volume_ok=False,
                 rejection_reason=f"Volume too low: ${volume_24h:.0f} < ${self.min_volume_usdt:.0f}"
             )
 
@@ -105,6 +110,7 @@ class SafetyFilters:
                     volume_24h=volume_24h,
                     bid_depth=bid_depth,
                     ask_depth=ask_depth,
+                    depth_ok=False,
                     rejection_reason=f"Ask depth too shallow: ${ask_depth:.0f}"
                 )
 
