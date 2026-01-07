@@ -46,6 +46,7 @@ class ScalperBot:
         self._daily_task = None
         self._labeler_task = None
         self._reconciler_task = None
+        self._telegram_task = None
 
     async def start(self):
         """Start all components."""
@@ -71,8 +72,8 @@ class ScalperBot:
         if self.telegram:
             initialized = await self.telegram.initialize()
             if initialized:
-                # Start telegram in background
-                asyncio.create_task(self.telegram.start())
+                # Start telegram in background (save task for cleanup)
+                self._telegram_task = asyncio.create_task(self.telegram.start())
                 await self.telegram.send_message(
                     f"ScalperBot started\n"
                     f"Mode: {'DRY_RUN' if settings.dry_run else 'LIVE'}\n"
@@ -144,6 +145,14 @@ class ScalperBot:
                 await asyncio.wait_for(self.telegram.stop(), timeout=5.0)
             except asyncio.TimeoutError:
                 logger.warning("Telegram stop timed out")
+
+            # Cancel the telegram polling task if still running
+            if self._telegram_task and not self._telegram_task.done():
+                self._telegram_task.cancel()
+                try:
+                    await asyncio.wait_for(self._telegram_task, timeout=2.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
 
         logger.info("ScalperBot stopped")
 

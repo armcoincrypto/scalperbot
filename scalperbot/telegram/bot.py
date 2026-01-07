@@ -78,19 +78,39 @@ class TelegramBot:
             # Drop pending updates to prevent old commands (like /panic) from
             # being reprocessed after a restart
             await self.bot.delete_webhook(drop_pending_updates=True)
-            await self.dp.start_polling(self.bot, drop_pending_updates=True)
+            # Disable aiogram's internal signal handling - we handle signals ourselves
+            await self.dp.start_polling(
+                self.bot,
+                drop_pending_updates=True,
+                handle_signals=False
+            )
         except Exception as e:
             logger.error(f"Bot polling error: {e}")
         finally:
             self.running = False
 
     async def stop(self):
-        """Stop bot."""
+        """Stop bot gracefully."""
+        if not self.running:
+            return
+
         self.running = False
+        logger.info("Stopping Telegram bot...")
+
+        # Stop the dispatcher polling first
         if self.dp:
-            await self.dp.stop_polling()
+            try:
+                await self.dp.stop_polling()
+            except Exception as e:
+                logger.debug(f"Dispatcher stop: {e}")
+
+        # Close bot session
         if self.bot:
-            await self.bot.session.close()
+            try:
+                await self.bot.session.close()
+            except Exception as e:
+                logger.debug(f"Bot session close: {e}")
+
         logger.info("Telegram bot stopped")
 
     async def send_message(self, text: str, chat_id: str = None):
