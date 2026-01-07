@@ -18,6 +18,8 @@ from datetime import datetime, timedelta, timezone
 from scalperbot.config import settings
 from scalperbot.log import setup_logging, get_logger
 from scalperbot.core.engine import TradingEngine
+from scalperbot.core.labeler import OutcomeLabeler
+from scalperbot.core.reconciler import ExchangeReconciler
 from scalperbot.telegram.bot import TelegramBot
 
 logger = get_logger(__name__)
@@ -30,14 +32,20 @@ class ScalperBot:
     Orchestrates:
     - Trading engine
     - Telegram bot
+    - Outcome labeler (research)
+    - Exchange reconciler (safety)
     - Daily summary scheduler
     """
 
     def __init__(self, no_telegram: bool = False):
         self.engine = TradingEngine()
         self.telegram = TelegramBot(self.engine) if not no_telegram else None
+        self.labeler = OutcomeLabeler()
+        self.reconciler = ExchangeReconciler()
         self.running = False
         self._daily_task = None
+        self._labeler_task = None
+        self._reconciler_task = None
 
     async def start(self):
         """Start all components."""
@@ -51,6 +59,13 @@ class ScalperBot:
 
         # Initialize engine
         await self.engine.initialize()
+
+        # Run state recovery on startup (for LIVE mode)
+        if not settings.dry_run:
+            await self.reconciler.initialize()
+            recovery = await self.reconciler.recover_state()
+            if recovery.get("positions_found", 0) > 0:
+                logger.warning(f"State recovery: {recovery}")
 
         # Initialize and start Telegram bot
         if self.telegram:
@@ -67,6 +82,13 @@ class ScalperBot:
 
         # Start daily summary scheduler
         self._daily_task = asyncio.create_task(self._daily_summary_loop())
+
+        # Start outcome labeler (background task for research)
+        self._labeler_task = asyncio.create_task(self._labeler_loop())
+
+        # Start periodic reconciliation (for LIVE mode)
+        if not settings.dry_run:
+            self._reconciler_task = asyncio.create_task(self._reconciler_loop())
 
         # Keep running
         while self.running:
@@ -87,6 +109,12 @@ class ScalperBot:
         if self._daily_task:
             self._daily_task.cancel()
 
+        if self._labeler_task:
+            self._labeler_task.cancel()
+
+        if self._reconciler_task:
+            self._reconciler_task.cancel()
+
         logger.info("ScalperBot stopped")
 
     async def _daily_summary_loop(self):
@@ -103,6 +131,54 @@ class ScalperBot:
 
             if self.telegram and self.running:
                 await self.telegram.send_daily_summary()
+
+    async def _labeler_loop(self):
+        """Run outcome labeler to analyze historical ticks."""
+        # Wait for initial startup
+        await asyncio.sleep(60)
+
+        try:
+            await self.labeler.initialize()
+            logger.info("Outcome labeler started")
+
+            while self.running:
+                try:
+                    await self.labeler._label_batch(batch_size=50)
+                except Exception as e:
+                    logger.error(f"Labeler error: {e}")
+
+                # Run every 5 minutes
+                await asyncio.sleep(300)
+
+        except asyncio.CancelledError:
+            logger.info("Labeler task cancelled")
+
+    async def _reconciler_loop(self):
+        """Run periodic position reconciliation."""
+        # Wait for initial startup
+        await asyncio.sleep(120)
+
+        try:
+            logger.info("Position reconciler started")
+
+            while self.running:
+                try:
+                    discrepancies = await self.reconciler.reconcile_positions()
+                    if discrepancies:
+                        # Alert via Telegram
+                        if self.telegram:
+                            msg = "STATE DISCREPANCY DETECTED:\n"
+                            for d in discrepancies:
+                                msg += f"  {d.severity}: {d.discrepancy_type} {d.symbol}\n"
+                            await self.telegram.send_message(msg)
+                except Exception as e:
+                    logger.error(f"Reconciler error: {e}")
+
+                # Run every 5 minutes
+                await asyncio.sleep(300)
+
+        except asyncio.CancelledError:
+            logger.info("Reconciler task cancelled")
 
 
 def parse_args():

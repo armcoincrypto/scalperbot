@@ -21,6 +21,7 @@ class TradeCandidate:
     filter_result: FilterResult
     priority: float  # Combined ranking score
     entry_price: float
+    tick_id: Optional[int] = None  # For research/analytics tracking
 
 
 class CandidateSelector:

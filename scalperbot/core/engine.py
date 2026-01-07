@@ -11,12 +11,15 @@ from scalperbot.log import get_logger
 from scalperbot.mexc import MEXCClient
 from scalperbot.mexc.models import BookTicker, Ticker24h
 from scalperbot.storage import Database, PositionRepo, TradeRepo, SignalRepo
-from scalperbot.storage.repo import CooldownRepo
+from scalperbot.storage.repo import (
+    CooldownRepo, TickRepo, OutcomeRepo, StrategyVersionRepo, SimulatedTradeRepo
+)
 from scalperbot.core.indicators import Indicators, IndicatorResult
 from scalperbot.core.scoring import SignalScorer, SignalScore
 from scalperbot.core.filters import SafetyFilters, FilterResult
 from scalperbot.core.risk import RiskManager, RiskParameters
 from scalperbot.core.selector import CandidateSelector, TradeCandidate
+from scalperbot.core.simulator import TradeSimulator, get_simulator
 
 logger = get_logger(__name__)
 
@@ -40,6 +43,16 @@ class TradingEngine:
         self.trades: Optional[TradeRepo] = None
         self.signals: Optional[SignalRepo] = None
         self.cooldowns: Optional[CooldownRepo] = None
+
+        # Research/analytics repos
+        self.ticks: Optional[TickRepo] = None
+        self.outcomes: Optional[OutcomeRepo] = None
+        self.strategy_versions: Optional[StrategyVersionRepo] = None
+        self.simulated_trades: Optional[SimulatedTradeRepo] = None
+        self.current_strategy_version_id: Optional[int] = None
+
+        # Trade simulator for realistic DRY_RUN
+        self.simulator = get_simulator()
 
         self.indicators = Indicators()
         self.scorer = SignalScorer()
@@ -66,6 +79,15 @@ class TradingEngine:
         self.signals = SignalRepo(self.db)
         self.cooldowns = CooldownRepo(self.db)
 
+        # Research/analytics repos
+        self.ticks = TickRepo(self.db)
+        self.outcomes = OutcomeRepo(self.db)
+        self.strategy_versions = StrategyVersionRepo(self.db)
+        self.simulated_trades = SimulatedTradeRepo(self.db)
+
+        # Initialize or get strategy version
+        await self._init_strategy_version()
+
         self.watchlist = settings.watchlist_symbols
 
         # Test API connectivity
@@ -75,6 +97,49 @@ class TradingEngine:
             logger.error("Failed to connect to MEXC API")
 
         logger.info(f"Engine initialized with {len(self.watchlist)} symbols")
+        logger.info(f"Strategy version: {self.current_strategy_version_id}")
+
+    async def _init_strategy_version(self):
+        """Initialize or get current strategy version for tracking."""
+        # Check if there's an active version with same parameters
+        active = await self.strategy_versions.get_active()
+
+        current_params = {
+            "buy_pct_trigger": settings.buy_pct_trigger,
+            "buy_score_min": settings.buy_score_min,
+            "base_sl_pct": settings.base_sl_pct,
+            "take_profit_pct": settings.take_profit_pct,
+            "max_spread_pct": settings.max_spread_pct,
+            "position_size_usdt": settings.position_size_usdt,
+            "poll_interval_sec": settings.poll_interval_sec,
+            "use_limit_orders": settings.use_limit_orders,
+        }
+
+        # Create new version if none exists or params changed
+        if not active:
+            self.current_strategy_version_id = await self.strategy_versions.create(
+                name=f"v1.0-{datetime.now(timezone.utc).strftime('%Y%m%d')}",
+                parameters=current_params,
+                description="Initial strategy version"
+            )
+            logger.info(f"Created new strategy version: {self.current_strategy_version_id}")
+        else:
+            # Check if key params match
+            params_match = (
+                active.get("buy_pct_trigger") == current_params["buy_pct_trigger"] and
+                active.get("buy_score_min") == current_params["buy_score_min"] and
+                active.get("base_sl_pct") == current_params["base_sl_pct"]
+            )
+            if params_match:
+                self.current_strategy_version_id = active["id"]
+            else:
+                # Create new version with changed params
+                self.current_strategy_version_id = await self.strategy_versions.create(
+                    name=f"v1.1-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M')}",
+                    parameters=current_params,
+                    description="Parameters changed"
+                )
+                logger.info(f"Created new strategy version (params changed): {self.current_strategy_version_id}")
 
     async def start(self):
         """Start the trading loop."""
@@ -159,12 +224,19 @@ class TradingEngine:
         has_position = await self.positions.has_open_position(symbol)
         in_cooldown = await self.cooldowns.is_in_cooldown(symbol)
 
-        skip, reason = self.selector.should_skip(
+        skip, skip_reason = self.selector.should_skip(
             symbol, has_position, in_cooldown,
             open_count, settings.max_open_positions
         )
+
+        # Variables for tick logging
+        decision = "SKIP"
+        decision_reason = skip_reason if skip else ""
+        tick_id = None
+
         if skip:
-            logger.debug(f"{symbol}: Skipped ({reason})")
+            logger.debug(f"{symbol}: Skipped ({skip_reason})")
+            # Still log the skip for analysis (but don't fetch market data)
             return None
 
         try:
@@ -178,6 +250,8 @@ class TradingEngine:
             # Calculate indicators
             ind = self.indicators.calculate(symbol, klines)
             if not ind.is_valid:
+                decision = "SKIP"
+                decision_reason = "Invalid indicators"
                 return None
 
             # Run safety filters
@@ -191,8 +265,32 @@ class TradingEngine:
                 ind, ext_signal, filter_result.spread_pct
             )
 
+            # Determine decision
+            is_signal = score.total_score >= 1.0 or score.total_score <= -1.0
+            if not filter_result.passed:
+                decision = "FILTERED"
+                decision_reason = filter_result.rejection_reason
+            elif not score.is_buy_signal:
+                decision = "NO_SIGNAL"
+                decision_reason = f"Score {score.total_score:.2f} below threshold"
+            else:
+                decision = "CANDIDATE"
+                decision_reason = f"Score {score.total_score:.2f}"
+
+            # Log tick for research/analytics
+            tick_id = await self._log_tick(
+                symbol=symbol,
+                book_ticker=book_ticker,
+                ind=ind,
+                score=score,
+                filter_result=filter_result,
+                decision=decision,
+                decision_reason=decision_reason,
+                is_signal=is_signal
+            )
+
             # Log interesting signals
-            if score.total_score >= 1.0 or score.total_score <= -1.0:
+            if is_signal:
                 logger.info(
                     f"{symbol}: Score={score.total_score:.2f} "
                     f"({', '.join(score.reasons)})"
@@ -212,12 +310,64 @@ class TradingEngine:
                 score=score,
                 filter_result=filter_result,
                 priority=0,  # Will be calculated by selector
-                entry_price=book_ticker.ask_price
+                entry_price=book_ticker.ask_price,
+                tick_id=tick_id  # Store for simulated trade tracking
             )
 
         except Exception as e:
             logger.error(f"{symbol}: Analysis error - {e}")
             return None
+
+    async def _log_tick(
+        self,
+        symbol: str,
+        book_ticker: BookTicker,
+        ind: IndicatorResult,
+        score: SignalScore,
+        filter_result: FilterResult,
+        decision: str,
+        decision_reason: str,
+        is_signal: bool
+    ) -> int:
+        """Log tick data for research/analytics."""
+        try:
+            tick_id = await self.ticks.record(
+                symbol=symbol,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                price=book_ticker.ask_price,
+                bid=book_ticker.bid_price,
+                ask=book_ticker.ask_price,
+                spread_pct=filter_result.spread_pct,
+                indicators={
+                    "momentum_2m": ind.momentum_2m,
+                    "momentum_5m": ind.momentum_5m,
+                    "volume_ratio": ind.volume_ratio,
+                    "rsi": ind.rsi,
+                    "atr": ind.atr,
+                    "atr_pct": ind.atr_pct
+                },
+                scores={
+                    "momentum": score.momentum_score,
+                    "volume": score.volume_score,
+                    "rsi": score.rsi_score,
+                    "external": score.external_score,
+                    "total": score.total_score
+                },
+                filters={
+                    "spread_ok": filter_result.spread_ok,
+                    "volume_ok": filter_result.volume_ok,
+                    "depth_ok": filter_result.depth_ok,
+                    "all_passed": filter_result.passed
+                },
+                decision=decision,
+                decision_reason=decision_reason,
+                is_signal=is_signal,
+                strategy_version_id=self.current_strategy_version_id
+            )
+            return tick_id
+        except Exception as e:
+            logger.error(f"Failed to log tick: {e}")
+            return 0
 
     async def _execute_entry(self, candidate: TradeCandidate):
         """Execute entry trade."""
@@ -225,7 +375,9 @@ class TradingEngine:
         entry_price = candidate.entry_price
 
         try:
-            # Get fresh indicators for risk calculation
+            # Get fresh market data for execution
+            book_ticker = await self.client.get_book_ticker(symbol)
+            ticker_24h = await self.client.get_ticker_24h(symbol)
             klines = await self.client.get_klines(symbol, "1m", 30)
             ind = self.indicators.calculate(symbol, klines)
 
@@ -239,6 +391,23 @@ class TradingEngine:
             logger.info(f"  SL: {risk_params.stop_loss_price:.6f} ({risk_params.stop_loss_pct:.2f}%)")
             logger.info(f"  TP: {risk_params.take_profit_price:.6f}")
             logger.info(f"  Qty: {risk_params.quantity:.6f}")
+
+            # Simulate realistic execution in DRY_RUN mode
+            simulated_exec = None
+            if settings.dry_run:
+                order_type = "LIMIT" if settings.use_limit_orders else "MARKET"
+                simulated_exec = self.simulator.simulate_buy(
+                    ask_price=book_ticker.ask_price,
+                    bid_price=book_ticker.bid_price,
+                    quantity=risk_params.quantity,
+                    order_type=order_type,
+                    volume_24h=ticker_24h.volume if ticker_24h else None
+                )
+                logger.info(f"  [SIM] Slippage: {simulated_exec.slippage_pct:.4f}%")
+                logger.info(f"  [SIM] Fees: ${simulated_exec.fee_amount:.4f} ({simulated_exec.fee_rate*100:.2f}%)")
+                logger.info(f"  [SIM] Fill ratio: {simulated_exec.fill_ratio*100:.1f}%")
+                if simulated_exec.is_partial:
+                    logger.warning(f"  [SIM] PARTIAL FILL: {simulated_exec.filled_qty:.6f} of {risk_params.quantity:.6f}")
 
             # Execute order
             if settings.use_limit_orders:
@@ -255,11 +424,36 @@ class TradingEngine:
                 await self.client.cancel_order(symbol, order.order_id)
                 return
 
+            # Use simulated execution price in DRY_RUN
+            actual_entry_price = order.avg_price or entry_price
+            actual_quantity = risk_params.quantity
+            if settings.dry_run and simulated_exec:
+                actual_entry_price = simulated_exec.executed_price
+                actual_quantity = simulated_exec.filled_qty
+
+                # Record simulated trade for analysis
+                if candidate.tick_id:
+                    await self.simulated_trades.record(
+                        tick_id=candidate.tick_id,
+                        symbol=symbol,
+                        side="BUY",
+                        intended_price=entry_price,
+                        simulated_price=simulated_exec.executed_price,
+                        slippage_pct=simulated_exec.slippage_pct,
+                        fee_rate=simulated_exec.fee_rate,
+                        fee_amount=simulated_exec.fee_amount,
+                        intended_qty=risk_params.quantity,
+                        filled_qty=simulated_exec.filled_qty,
+                        fill_ratio=simulated_exec.fill_ratio,
+                        net_cost=simulated_exec.net_cost,
+                        strategy_version_id=self.current_strategy_version_id
+                    )
+
             # Create position in database
             position_id = await self.positions.create(
                 symbol=symbol,
-                quantity=risk_params.quantity,
-                entry_price=order.avg_price or entry_price,
+                quantity=actual_quantity,
+                entry_price=actual_entry_price,
                 stop_loss=risk_params.stop_loss_price,
                 take_profit=risk_params.take_profit_price,
                 entry_order_id=order.order_id
@@ -270,8 +464,8 @@ class TradingEngine:
                 symbol=symbol,
                 side="BUY",
                 order_type=order.type,
-                quantity=risk_params.quantity,
-                price=order.avg_price or entry_price,
+                quantity=actual_quantity,
+                price=actual_entry_price,
                 order_id=order.order_id,
                 status=order.status,
                 position_id=position_id,
@@ -337,10 +531,29 @@ class TradingEngine:
         symbol = position["symbol"]
         position_id = position["id"]
         quantity = position["quantity"]
+        entry_price = position["entry_price"]
 
         logger.info(f"Closing position: {symbol} ({reason})")
 
         try:
+            # Get fresh market data for exit simulation
+            book_ticker = await self.client.get_book_ticker(symbol)
+            ticker_24h = await self.client.get_ticker_24h(symbol)
+
+            # Simulate realistic execution in DRY_RUN mode
+            simulated_exec = None
+            if settings.dry_run:
+                order_type = "LIMIT" if settings.use_limit_orders else "MARKET"
+                simulated_exec = self.simulator.simulate_sell(
+                    bid_price=book_ticker.bid_price,
+                    ask_price=book_ticker.ask_price,
+                    quantity=quantity,
+                    order_type=order_type,
+                    volume_24h=ticker_24h.volume if ticker_24h else None
+                )
+                logger.info(f"  [SIM] Exit slippage: {simulated_exec.slippage_pct:.4f}%")
+                logger.info(f"  [SIM] Exit fees: ${simulated_exec.fee_amount:.4f}")
+
             # Execute sell order
             if settings.use_limit_orders:
                 order = await self.client.sell_limit(
@@ -356,13 +569,25 @@ class TradingEngine:
                 await self.client.cancel_order(symbol, order.order_id)
                 order = await self.client.sell_market(symbol, quantity)
 
-            # Close position in database
+            # Use simulated exit price in DRY_RUN
+            actual_exit_price = order.avg_price or exit_price
+            if settings.dry_run and simulated_exec:
+                actual_exit_price = simulated_exec.executed_price
+
+            # Close position in database (with realistic price)
             pnl = await self.positions.close(
                 position_id,
-                exit_price=order.avg_price or exit_price,
+                exit_price=actual_exit_price,
                 exit_order_id=order.order_id,
                 exit_reason=reason
             )
+
+            # Adjust PnL for fees in DRY_RUN
+            if settings.dry_run and simulated_exec:
+                # Subtract both entry and exit fees from PnL
+                # (entry fees already accounted in entry price, exit fees need subtraction)
+                pnl -= simulated_exec.fee_amount
+                logger.info(f"  [SIM] Net PnL after fees: ${pnl:.2f}")
 
             # Record trade
             await self.trades.record(
@@ -370,7 +595,7 @@ class TradingEngine:
                 side="SELL",
                 order_type=order.type,
                 quantity=quantity,
-                price=order.avg_price or exit_price,
+                price=actual_exit_price,
                 order_id=order.order_id,
                 status=order.status,
                 position_id=position_id,
