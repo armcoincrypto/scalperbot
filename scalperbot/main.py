@@ -43,6 +43,7 @@ class ScalperBot:
         self.labeler = OutcomeLabeler()
         self.reconciler = ExchangeReconciler()
         self.running = False
+        self._stopped = False  # Prevent double-stop
         self._daily_task = None
         self._labeler_task = None
         self._reconciler_task = None
@@ -97,8 +98,9 @@ class ScalperBot:
 
     async def stop(self):
         """Stop all components gracefully."""
-        if not self.running:
+        if self._stopped:
             return  # Already stopped
+        self._stopped = True
 
         logger.info("Shutting down ScalperBot...")
         self.running = False
@@ -132,23 +134,22 @@ class ScalperBot:
             except asyncio.TimeoutError:
                 logger.warning("Engine stop timed out")
 
-        # Stop telegram (try to send shutdown message)
+        # Stop telegram - cancel task first, then clean up
         if self.telegram:
-            try:
-                await asyncio.wait_for(
-                    self.telegram.send_message("ScalperBot shutting down"),
-                    timeout=3.0
-                )
-            except (asyncio.TimeoutError, Exception):
-                pass  # Don't block shutdown for telegram message
+            # Cancel the polling task first to interrupt any pending requests
+            if self._telegram_task and not self._telegram_task.done():
+                self._telegram_task.cancel()
+
+            # Stop telegram (closes session and dispatcher)
             try:
                 await asyncio.wait_for(self.telegram.stop(), timeout=5.0)
             except asyncio.TimeoutError:
                 logger.warning("Telegram stop timed out")
+            except Exception as e:
+                logger.debug(f"Telegram stop error: {e}")
 
-            # Cancel the telegram polling task if still running
+            # Wait for cancelled task to finish
             if self._telegram_task and not self._telegram_task.done():
-                self._telegram_task.cancel()
                 try:
                     await asyncio.wait_for(self._telegram_task, timeout=2.0)
                 except (asyncio.TimeoutError, asyncio.CancelledError):
@@ -295,8 +296,27 @@ async def main():
             if not bot.engine.running:
                 asyncio.create_task(bot.engine.start())
 
-        # Wait for shutdown signal
-        await shutdown_event.wait()
+        # Wait for EITHER: shutdown signal OR bot task completion
+        # This handles both our signal handler and aiogram's signal handler
+        shutdown_wait = asyncio.create_task(shutdown_event.wait())
+        done, pending = await asyncio.wait(
+            [bot_task, shutdown_wait],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+
+        # Cancel any pending tasks
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        # Log what triggered the shutdown
+        if bot_task in done:
+            logger.info("Bot task completed, shutting down...")
+        else:
+            logger.info("Shutdown signal received...")
 
     except asyncio.CancelledError:
         logger.info("Main task cancelled")

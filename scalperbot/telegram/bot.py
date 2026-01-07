@@ -33,6 +33,7 @@ class TelegramBot:
         self.bot: Optional[Bot] = None
         self.dp: Optional[Dispatcher] = None
         self.running = False
+        self._stopped = False  # Prevent double-stop
 
         # Notification throttling
         self._last_notification: dict = {}
@@ -91,25 +92,28 @@ class TelegramBot:
 
     async def stop(self):
         """Stop bot gracefully."""
-        if not self.running:
+        if self._stopped:
             return
-
+        self._stopped = True
         self.running = False
         logger.info("Stopping Telegram bot...")
 
-        # Stop the dispatcher polling first
+        # Close bot session FIRST to interrupt any pending HTTP requests
+        # This is critical - stop_polling waits for current request to complete
+        if self.bot and self.bot.session:
+            try:
+                await self.bot.session.close()
+                logger.debug("Bot session closed")
+            except Exception as e:
+                logger.debug(f"Bot session close: {e}")
+
+        # Now stop the dispatcher polling (should return immediately since session is closed)
         if self.dp:
             try:
                 await self.dp.stop_polling()
+                logger.debug("Dispatcher polling stopped")
             except Exception as e:
                 logger.debug(f"Dispatcher stop: {e}")
-
-        # Close bot session
-        if self.bot:
-            try:
-                await self.bot.session.close()
-            except Exception as e:
-                logger.debug(f"Bot session close: {e}")
 
         logger.info("Telegram bot stopped")
 
