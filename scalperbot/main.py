@@ -327,6 +327,11 @@ async def main():
         await bot.stop()
         logger.info("Shutdown complete")
 
+        # Force exit after a brief delay - aiogram's retry loop can keep process alive
+        await asyncio.sleep(0.5)
+        import os
+        os._exit(0)
+
 
 if __name__ == "__main__":
     try:
