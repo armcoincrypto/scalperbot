@@ -95,25 +95,55 @@ class ScalperBot:
             await asyncio.sleep(1)
 
     async def stop(self):
-        """Stop all components."""
+        """Stop all components gracefully."""
+        if not self.running:
+            return  # Already stopped
+
         logger.info("Shutting down ScalperBot...")
         self.running = False
 
-        if self.engine.running:
-            await self.engine.stop()
-
-        if self.telegram:
-            await self.telegram.send_message("ScalperBot shutting down")
-            await self.telegram.stop()
-
-        if self._daily_task:
+        # Cancel background tasks first
+        tasks_to_cancel = []
+        if self._daily_task and not self._daily_task.done():
             self._daily_task.cancel()
-
-        if self._labeler_task:
+            tasks_to_cancel.append(self._daily_task)
+        if self._labeler_task and not self._labeler_task.done():
             self._labeler_task.cancel()
-
-        if self._reconciler_task:
+            tasks_to_cancel.append(self._labeler_task)
+        if self._reconciler_task and not self._reconciler_task.done():
             self._reconciler_task.cancel()
+            tasks_to_cancel.append(self._reconciler_task)
+
+        # Wait for tasks to cancel with timeout
+        if tasks_to_cancel:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*tasks_to_cancel, return_exceptions=True),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Some background tasks did not cancel in time")
+
+        # Stop engine
+        if self.engine and self.engine.running:
+            try:
+                await asyncio.wait_for(self.engine.stop(), timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.warning("Engine stop timed out")
+
+        # Stop telegram (try to send shutdown message)
+        if self.telegram:
+            try:
+                await asyncio.wait_for(
+                    self.telegram.send_message("ScalperBot shutting down"),
+                    timeout=3.0
+                )
+            except (asyncio.TimeoutError, Exception):
+                pass  # Don't block shutdown for telegram message
+            try:
+                await asyncio.wait_for(self.telegram.stop(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("Telegram stop timed out")
 
         logger.info("ScalperBot stopped")
 
@@ -229,28 +259,48 @@ async def main():
     # Create bot instance
     bot = ScalperBot(no_telegram=args.no_telegram)
 
-    # Handle shutdown signals
-    def signal_handler(sig, frame):
-        logger.info(f"Received signal {sig}")
-        asyncio.create_task(bot.stop())
+    # Handle shutdown signals using asyncio-safe approach
+    loop = asyncio.get_running_loop()
+    shutdown_event = asyncio.Event()
 
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    def signal_handler(sig):
+        logger.info(f"Received signal {sig.name}, initiating shutdown...")
+        shutdown_event.set()
+
+    # Register signal handlers
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, signal_handler, sig)
+        except NotImplementedError:
+            # Windows doesn't support add_signal_handler
+            signal.signal(sig, lambda s, f: shutdown_event.set())
 
     try:
-        await bot.start()
+        # Start bot in background
+        bot_task = asyncio.create_task(bot.start())
 
         # Auto-start engine if requested
         if args.auto_start:
-            await bot.engine.start()
+            # Wait a moment for initialization
+            await asyncio.sleep(2)
+            if not bot.engine.running:
+                asyncio.create_task(bot.engine.start())
 
-    except KeyboardInterrupt:
-        logger.info("Keyboard interrupt received")
+        # Wait for shutdown signal
+        await shutdown_event.wait()
+
+    except asyncio.CancelledError:
+        logger.info("Main task cancelled")
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
     finally:
+        # Graceful shutdown
         await bot.stop()
+        logger.info("Shutdown complete")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass  # Already handled by signal handler

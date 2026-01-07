@@ -350,7 +350,7 @@ class TradingEngine:
                     "momentum": score.momentum_score,
                     "volume": score.volume_score,
                     "rsi": score.rsi_score,
-                    "external": score.external_score,
+                    "external": score.external_signal,
                     "total": score.total_score
                 },
                 filters={

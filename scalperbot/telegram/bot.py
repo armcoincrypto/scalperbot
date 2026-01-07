@@ -75,7 +75,10 @@ class TelegramBot:
         logger.info("Starting Telegram bot polling...")
 
         try:
-            await self.dp.start_polling(self.bot)
+            # Drop pending updates to prevent old commands (like /panic) from
+            # being reprocessed after a restart
+            await self.bot.delete_webhook(drop_pending_updates=True)
+            await self.dp.start_polling(self.bot, drop_pending_updates=True)
         except Exception as e:
             logger.error(f"Bot polling error: {e}")
         finally:
