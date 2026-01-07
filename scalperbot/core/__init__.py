@@ -9,6 +9,7 @@ from scalperbot.core.selector import CandidateSelector
 from scalperbot.core.simulator import TradeSimulator, get_simulator
 from scalperbot.core.labeler import OutcomeLabeler
 from scalperbot.core.reconciler import ExchangeReconciler, verify_order_with_retry
+from scalperbot.core.circuit_breaker import CircuitBreaker, get_circuit_breaker
 
 __all__ = [
     "TradingEngine",
@@ -22,4 +23,6 @@ __all__ = [
     "OutcomeLabeler",
     "ExchangeReconciler",
     "verify_order_with_retry",
+    "CircuitBreaker",
+    "get_circuit_breaker",
 ]

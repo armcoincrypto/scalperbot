@@ -65,6 +65,22 @@ class Settings(BaseSettings):
     use_limit_orders: bool = True  # Use limit orders for safety
     limit_order_timeout_sec: int = 30  # Cancel limit order after timeout
 
+    # === Liquidity Mode ===
+    # "normal" = standard settings for majors (BTC, ETH, etc.)
+    # "low" = stricter settings for low-liquidity coins
+    liq_mode: str = "normal"
+
+    # Low-liquidity overrides (applied when liq_mode="low")
+    low_liq_max_spread_pct: float = 0.3  # Stricter spread for low-liq
+    low_liq_require_depth: bool = True   # Always require depth check
+    low_liq_position_size_pct: float = 50.0  # Use 50% of normal size
+    low_liq_sl_multiplier: float = 1.5   # Wider SL for low-liq
+
+    # === Circuit Breakers ===
+    max_daily_loss_pct: float = 5.0  # Stop trading if daily loss exceeds this % of capital
+    max_daily_trades: int = 50       # Max trades per day
+    max_consecutive_losses: int = 5  # Pause after N consecutive losses
+
     # === Database ===
     database_path: str = "scalperbot.db"
 
@@ -93,19 +109,44 @@ class Settings(BaseSettings):
         """Check if user is admin."""
         return user_id in self.admin_user_ids
 
+    @property
+    def is_low_liq_mode(self) -> bool:
+        """Check if low liquidity mode is enabled."""
+        return self.liq_mode.lower() == "low"
+
+    @property
+    def effective_max_spread_pct(self) -> float:
+        """Get effective max spread based on liq mode."""
+        return self.low_liq_max_spread_pct if self.is_low_liq_mode else self.max_spread_pct
+
+    @property
+    def effective_position_size(self) -> float:
+        """Get effective position size based on liq mode."""
+        if self.is_low_liq_mode:
+            return self.position_size_usdt * (self.low_liq_position_size_pct / 100)
+        return self.position_size_usdt
+
+    @property
+    def effective_sl_pct(self) -> float:
+        """Get effective stop loss % based on liq mode."""
+        if self.is_low_liq_mode:
+            return self.base_sl_pct * self.low_liq_sl_multiplier
+        return self.base_sl_pct
+
     def get_safe_debug_info(self) -> dict:
         """Get debug info WITHOUT secrets."""
         return {
             "mode": "DRY_RUN" if self.dry_run else "LIVE",
+            "liq_mode": self.liq_mode,
             "watchlist": self.watchlist_symbols,
-            "position_size_usdt": self.position_size_usdt,
+            "position_size_usdt": self.effective_position_size,
             "max_open_positions": self.max_open_positions,
             "poll_interval_sec": self.poll_interval_sec,
             "buy_pct_trigger": self.buy_pct_trigger,
             "buy_score_min": self.buy_score_min,
-            "base_sl_pct": self.base_sl_pct,
+            "base_sl_pct": self.effective_sl_pct,
             "take_profit_pct": self.take_profit_pct,
-            "max_spread_pct": self.max_spread_pct,
+            "max_spread_pct": self.effective_max_spread_pct,
             "use_limit_orders": self.use_limit_orders,
             "has_api_key": bool(self.mexc_api_key),
             "has_telegram_token": bool(self.telegram_bot_token),
