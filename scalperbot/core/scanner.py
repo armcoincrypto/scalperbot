@@ -234,14 +234,17 @@ class CoinScanner:
                         continue
 
                     data = await resp.json()
-                    logger.info(f"Received {len(data)} tickers from MEXC")
+                    logger.info(f"Received {len(data)} raw tickers from MEXC")
 
                     # Parse and filter USDT pairs only
                     tickers = []
+                    usdt_count = 0
+                    parse_errors = 0
                     for item in data:
                         symbol = item.get('symbol', '')
                         if not symbol.endswith('USDT'):
                             continue
+                        usdt_count += 1
 
                         try:
                             tickers.append(TickerData(
@@ -251,9 +254,13 @@ class CoinScanner:
                                 price_change_pct=float(item.get('priceChangePercent', 0)),
                                 trade_count=int(item.get('count', 0))
                             ))
-                        except (ValueError, TypeError):
+                        except (ValueError, TypeError) as e:
+                            parse_errors += 1
+                            if parse_errors <= 3:  # Log first few errors
+                                logger.warning(f"Parse error for {symbol}: {e}")
                             continue
 
+                    logger.info(f"Parsed {len(tickers)} USDT tickers (found {usdt_count}, errors: {parse_errors})")
                     return tickers
 
             except asyncio.TimeoutError:
