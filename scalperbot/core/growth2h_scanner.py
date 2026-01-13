@@ -140,19 +140,35 @@ class Growth2HScanner:
     async def list_usdt_symbols(self, session: aiohttp.ClientSession) -> list[str]:
         info = await self.client.exchange_info(session)
         symbols = []
-        for s in info.get("symbols", []):
+        all_symbols = info.get("symbols", [])
+        print(f"[debug] exchangeInfo returned {len(all_symbols)} symbols")
+
+        # Debug: show first symbol structure
+        if all_symbols:
+            print(f"[debug] First symbol structure: {list(all_symbols[0].keys())}")
+
+        for s in all_symbols:
             sym = s.get("symbol")
-            status = s.get("status")
+            # MEXC uses different status field names
+            status = s.get("status") or s.get("isSpotTradingAllowed")
             quote = s.get("quoteAsset")
-            if not sym or status != "ENABLED":
+
+            if not sym:
+                continue
+            # Accept both "ENABLED" string and True boolean
+            if status not in ("ENABLED", "1", True, 1):
                 continue
             if quote != "USDT":
                 continue
             symbols.append(sym)
+
+        print(f"[debug] Found {len(symbols)} USDT symbols")
         return symbols
 
     async def build_volume_map(self, session: aiohttp.ClientSession) -> dict[str, float]:
         tickers = await self.client.ticker_24hr(session)
+        print(f"[debug] ticker_24hr returned {len(tickers)} tickers")
+
         out: dict[str, float] = {}
         for t in tickers:
             sym = t.get("symbol")
@@ -163,6 +179,8 @@ class Growth2HScanner:
                 out[sym] = float(qv)
             except Exception:
                 continue
+
+        print(f"[debug] Built volume map for {len(out)} symbols")
         return out
 
     async def fetch_klines_last_days(
@@ -287,15 +305,24 @@ class Growth2HScanner:
 
             # Filter by volume first (key requirement)
             candidates: list[tuple[str, float]] = []
+            no_volume = 0
+            too_low = 0
+            too_high = 0
+
             for sym in symbols:
                 qv = volume_map.get(sym)
                 if qv is None:
+                    no_volume += 1
                     continue
                 if qv < self.min_quote_volume_24h:
+                    too_low += 1
                     continue
                 if qv >= self.max_quote_volume_24h:
+                    too_high += 1
                     continue
                 candidates.append((sym, qv))
+
+            print(f"[debug] Volume filter: {len(candidates)} passed, {no_volume} no data, {too_low} too low (<{self.min_quote_volume_24h}), {too_high} too high (>={self.max_quote_volume_24h})")
 
             results: list[GrowthEvent] = []
             started = time.time()
