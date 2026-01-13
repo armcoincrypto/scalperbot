@@ -15,6 +15,7 @@ from scalperbot.storage.repo import (
     PositionRepo, TradeRepo, SignalRepo, TickRepo, OutcomeRepo
 )
 from scalperbot.core.circuit_breaker import get_circuit_breaker
+from scalperbot.core.scanner import get_scanner
 
 logger = get_logger(__name__)
 
@@ -68,7 +69,10 @@ async def cmd_start(message: Message):
         "/report - Detailed 24h report\n"
         "/signals - Recent signal quality\n"
         "/best - Best/worst symbols\n"
-        "/breakers - Circuit breaker status"
+        "/breakers - Circuit breaker status\n\n"
+        "SCANNER:\n"
+        "/scanner - Scanner status\n"
+        "/scan - Run manual scan"
     )
     await message.answer(text)
 
@@ -537,3 +541,100 @@ async def cmd_breakers(message: Message):
     text += f"\n\nAPI errors (1m/5m): {status['api_errors_1m']}/{status['api_errors_5m']}"
 
     await message.answer(text)
+
+
+@router.message(Command("scan"))
+async def cmd_scan(message: Message):
+    """Handle /scan command - run manual coin scan."""
+    if not is_admin(message.from_user.id):
+        await message.answer("Not authorized")
+        return
+
+    await message.answer("Starting coin scan... this may take a minute.")
+
+    try:
+        scanner = await get_scanner()
+        result = await scanner.run_daily_scan()
+
+        if result['success']:
+            text = (
+                f"SCAN COMPLETE\n"
+                f"{'='*30}\n"
+                f"Total symbols: {result['total_symbols']}\n"
+                f"Excluded (majors/stables): {result['excluded']}\n"
+                f"Filtered (low vol/momentum): {result['filtered']}\n"
+                f"Candidates (>30% momentum): {result['candidates']}\n"
+                f"Duration: {result['duration_sec']:.1f}s\n\n"
+                f"NEW WATCHLIST ({len(result['watchlist'])}):\n"
+            )
+            for sym in result['watchlist']:
+                text += f"  {sym}\n"
+
+            # Update engine watchlist
+            if _engine and result['watchlist']:
+                _engine.set_watchlist(result['watchlist'])
+                text += "\nEngine watchlist updated!"
+        else:
+            text = f"Scan failed: {result['error']}"
+
+        await message.answer(text)
+    except Exception as e:
+        await message.answer(f"Scan error: {e}")
+
+
+@router.message(Command("scanner"))
+async def cmd_scanner(message: Message):
+    """Handle /scanner command - show scanner status and recent runs."""
+    try:
+        db = await get_database()
+
+        # Get current watchlist
+        watchlist = await db.fetch_all(
+            "SELECT symbol, momentum_10d, volume_24h, score, is_new_listing "
+            "FROM scanner_watchlist ORDER BY score DESC"
+        )
+
+        # Get last scan run
+        last_run = await db.fetch_one(
+            "SELECT * FROM scanner_runs ORDER BY created_at DESC LIMIT 1"
+        )
+
+        # Get ticker stats
+        ticker_stats = await db.fetch_one(
+            "SELECT COUNT(DISTINCT symbol) as symbols, COUNT(DISTINCT date) as days "
+            "FROM daily_tickers"
+        )
+
+        text = f"COIN SCANNER STATUS\n{'='*30}\n\n"
+
+        if last_run:
+            text += (
+                f"Last scan: {last_run['run_date']}\n"
+                f"  Symbols scanned: {last_run['total_symbols']}\n"
+                f"  Candidates found: {last_run['candidates_count']}\n"
+                f"  Duration: {last_run['duration_sec']:.1f}s\n\n"
+            )
+
+        if ticker_stats:
+            text += (
+                f"Data stored:\n"
+                f"  Unique symbols: {ticker_stats['symbols']}\n"
+                f"  Days of history: {ticker_stats['days']}\n\n"
+            )
+
+        text += f"Current watchlist ({len(watchlist)}):\n"
+        for w in watchlist[:10]:
+            new_tag = " [NEW]" if w['is_new_listing'] else ""
+            text += (
+                f"  {w['symbol']}: {w['momentum_10d']:.1f}% "
+                f"(${w['volume_24h']/1e6:.1f}M){new_tag}\n"
+            )
+
+        if len(watchlist) > 10:
+            text += f"  ... and {len(watchlist) - 10} more\n"
+
+        text += f"\nUse /scan to run manual scan"
+
+        await message.answer(text)
+    except Exception as e:
+        await message.answer(f"Error: {e}")

@@ -224,4 +224,62 @@ CREATE INDEX IF NOT EXISTS idx_ticks_is_signal ON ticks(is_signal);
 CREATE INDEX IF NOT EXISTS idx_ticks_strategy ON ticks(strategy_version_id);
 CREATE INDEX IF NOT EXISTS idx_outcomes_labeled ON outcomes(labeled_at);
 CREATE INDEX IF NOT EXISTS idx_simtrades_symbol ON simulated_trades(symbol);
+
+-- ============================================================
+-- COIN SCANNER / MOMENTUM PARSER TABLES
+-- ============================================================
+
+-- Daily ticker snapshots (rolling 15-day window)
+CREATE TABLE IF NOT EXISTS daily_tickers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,              -- YYYY-MM-DD
+    symbol TEXT NOT NULL,
+    last_price REAL NOT NULL,
+    quote_volume_24h REAL,           -- 24h volume in USDT
+    price_change_pct_24h REAL,       -- 24h % change from MEXC
+    trade_count_24h INTEGER,         -- Number of trades in 24h
+    first_seen_date TEXT,            -- When we first saw this symbol
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(date, symbol)
+);
+
+-- Dynamic watchlist (scanner updates this, ScalperBot reads it)
+CREATE TABLE IF NOT EXISTS scanner_watchlist (
+    symbol TEXT PRIMARY KEY,
+    momentum_10d REAL,               -- 10-day momentum %
+    volume_24h REAL,                 -- Latest 24h volume
+    score REAL,                      -- Ranking score
+    is_new_listing INTEGER DEFAULT 0,-- First seen within 10 days
+    days_since_listing INTEGER,
+    added_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Blacklist (static exclusions + auto-detected dead coins)
+CREATE TABLE IF NOT EXISTS scanner_blacklist (
+    symbol TEXT PRIMARY KEY,
+    reason TEXT NOT NULL,            -- 'static', 'dead_coin', 'low_volume', 'scam'
+    added_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Scanner run history (for monitoring)
+CREATE TABLE IF NOT EXISTS scanner_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_date TEXT NOT NULL,
+    total_symbols INTEGER,
+    excluded_count INTEGER,
+    filtered_count INTEGER,
+    candidates_count INTEGER,
+    watchlist_updated INTEGER DEFAULT 0,
+    old_watchlist TEXT,              -- JSON of previous watchlist
+    new_watchlist TEXT,              -- JSON of new watchlist
+    duration_sec REAL,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Indexes for scanner tables
+CREATE INDEX IF NOT EXISTS idx_daily_tickers_date ON daily_tickers(date);
+CREATE INDEX IF NOT EXISTS idx_daily_tickers_symbol ON daily_tickers(symbol);
+CREATE INDEX IF NOT EXISTS idx_scanner_watchlist_score ON scanner_watchlist(score DESC);
 """

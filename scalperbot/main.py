@@ -20,6 +20,7 @@ from scalperbot.log import setup_logging, get_logger
 from scalperbot.core.engine import TradingEngine
 from scalperbot.core.labeler import OutcomeLabeler
 from scalperbot.core.reconciler import ExchangeReconciler
+from scalperbot.core.scanner import get_scanner
 from scalperbot.telegram.bot import TelegramBot
 
 logger = get_logger(__name__)
@@ -34,6 +35,7 @@ class ScalperBot:
     - Telegram bot
     - Outcome labeler (research)
     - Exchange reconciler (safety)
+    - Coin scanner (momentum watchlist)
     - Daily summary scheduler
     """
 
@@ -47,6 +49,7 @@ class ScalperBot:
         self._daily_task = None
         self._labeler_task = None
         self._reconciler_task = None
+        self._scanner_task = None
         self._telegram_task = None
 
     async def start(self):
@@ -92,6 +95,10 @@ class ScalperBot:
         if not settings.dry_run:
             self._reconciler_task = asyncio.create_task(self._reconciler_loop())
 
+        # Start coin scanner (daily momentum watchlist updater)
+        if settings.scanner_enabled:
+            self._scanner_task = asyncio.create_task(self._scanner_loop())
+
         # Keep running
         while self.running:
             await asyncio.sleep(1)
@@ -116,6 +123,9 @@ class ScalperBot:
         if self._reconciler_task and not self._reconciler_task.done():
             self._reconciler_task.cancel()
             tasks_to_cancel.append(self._reconciler_task)
+        if self._scanner_task and not self._scanner_task.done():
+            self._scanner_task.cancel()
+            tasks_to_cancel.append(self._scanner_task)
 
         # Wait for tasks to cancel with timeout
         if tasks_to_cancel:
@@ -219,6 +229,71 @@ class ScalperBot:
 
         except asyncio.CancelledError:
             logger.info("Reconciler task cancelled")
+
+    async def _scanner_loop(self):
+        """Run daily coin scanner to update momentum watchlist."""
+        try:
+            scanner = await get_scanner()
+            logger.info("Coin scanner started")
+
+            # Run immediately on startup, then daily
+            first_run = True
+
+            while self.running:
+                now = datetime.now(timezone.utc)
+
+                if first_run:
+                    # Run 30 seconds after startup
+                    await asyncio.sleep(30)
+                    first_run = False
+                else:
+                    # Calculate time until next scheduled run
+                    target = now.replace(
+                        hour=settings.scanner_run_hour,
+                        minute=settings.scanner_run_minute,
+                        second=0,
+                        microsecond=0
+                    )
+                    if target <= now:
+                        target += timedelta(days=1)
+
+                    wait_seconds = (target - now).total_seconds()
+                    logger.info(
+                        f"Next scanner run in {wait_seconds/3600:.1f} hours "
+                        f"at {target.strftime('%H:%M')} UTC"
+                    )
+                    await asyncio.sleep(wait_seconds)
+
+                if not self.running:
+                    break
+
+                # Run the scan
+                try:
+                    result = await scanner.run_daily_scan()
+
+                    # Notify via Telegram
+                    if self.telegram and result['success']:
+                        if result['watchlist']:
+                            msg = (
+                                f"SCANNER UPDATE\n"
+                                f"Found {result['candidates']} momentum coins\n"
+                                f"New watchlist ({len(result['watchlist'])}):\n"
+                                + "\n".join(f"  {s}" for s in result['watchlist'][:10])
+                            )
+                            await self.telegram.send_message(msg)
+
+                    # Update engine watchlist if using DB-backed watchlist
+                    if settings.scanner_use_db_watchlist and result['watchlist']:
+                        self.engine.set_watchlist(result['watchlist'])
+                        logger.info(f"Engine watchlist updated: {result['watchlist']}")
+
+                except Exception as e:
+                    logger.error(f"Scanner error: {e}", exc_info=True)
+                    if self.telegram:
+                        await self.telegram.send_message(f"Scanner error: {e}")
+
+        except asyncio.CancelledError:
+            logger.info("Scanner task cancelled")
 
 
 def parse_args():

@@ -1,0 +1,505 @@
+"""
+MEXC Daily Momentum Watchlist Scanner
+
+Scans all MEXC USDT pairs daily to find coins with strong momentum.
+Automatically updates ScalperBot watchlist with top performers.
+
+Features:
+- Fetches all tickers in 1 API call (fast, API-limit friendly)
+- Stores 15-day rolling window of daily snapshots
+- Calculates 10-day momentum
+- Prioritizes new listings
+- Filters out majors, stables, and dead coins
+- Auto-updates watchlist in database
+"""
+
+import asyncio
+import aiohttp
+import json
+from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from typing import List, Dict, Optional, Set
+import time
+
+from scalperbot.config import settings
+from scalperbot.log import get_logger
+from scalperbot.storage.db import get_database
+
+logger = get_logger(__name__)
+
+
+# ============================================================
+# STATIC EXCLUSIONS
+# ============================================================
+
+# Major coins (too stable for scalping)
+EXCLUDED_MAJORS = {
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT",
+    "SOLUSDT", "DOTUSDT", "MATICUSDT", "AVAXUSDT", "LINKUSDT",
+    "LTCUSDT", "BCHUSDT", "XLMUSDT", "ATOMUSDT", "ETCUSDT",
+    "TRXUSDT", "NEARUSDT", "ALGOUSDT", "VETUSDT", "ICPUSDT"
+}
+
+# Stablecoins and pegged assets
+EXCLUDED_STABLES = {
+    "USDCUSDT", "USDTUSDT", "BUSDUSDT", "DAIUSDT", "TUSDUSDT",
+    "USDPUSDT", "GUSDUSDT", "PAXUSDT", "EURUSDT", "GBPUSDT",
+    "USTUSDT", "FRAXUSDT", "LUSDUSDT", "SUSDUSDT", "CUSDUSDT"
+}
+
+# Known problematic/scam tokens (add as discovered)
+EXCLUDED_SCAMS: Set[str] = set()
+
+
+@dataclass
+class TickerData:
+    """Parsed ticker data from MEXC API."""
+    symbol: str
+    last_price: float
+    quote_volume: float
+    price_change_pct: float
+    trade_count: int
+
+
+@dataclass
+class CoinCandidate:
+    """A coin that passed filters and is a candidate for watchlist."""
+    symbol: str
+    momentum_10d: float
+    volume_24h: float
+    price: float
+    is_new_listing: bool
+    days_since_listing: int
+    score: float
+
+
+class CoinScanner:
+    """
+    Daily momentum scanner for MEXC coins.
+
+    Workflow:
+    1. Fetch all tickers (1 API call)
+    2. Filter out excluded symbols
+    3. Store daily snapshot
+    4. Calculate 10-day momentum from historical data
+    5. Rank and select top candidates
+    6. Update watchlist
+    """
+
+    # Configuration
+    MEXC_TICKER_URL = "https://api.mexc.com/api/v3/ticker/24hr"
+    MIN_VOLUME_USDT = 200_000  # Minimum 24h volume
+    MIN_MOMENTUM_PCT = 30.0    # Minimum 10-day gain %
+    MAX_SPIKE_PCT = 500.0      # Max 24h change (filter extreme pumps)
+    LOOKBACK_DAYS = 10         # Days to calculate momentum
+    RETENTION_DAYS = 15        # Days to keep in database
+    TOP_N_COINS = 10           # Number of coins for watchlist
+    NEW_LISTING_DAYS = 10      # Consider "new" if first seen within N days
+    NEW_LISTING_BONUS = 20.0   # Score bonus for new listings
+
+    def __init__(self):
+        self.db = None
+        self._session: Optional[aiohttp.ClientSession] = None
+
+    async def initialize(self):
+        """Initialize database and HTTP session."""
+        self.db = await get_database()
+        self._session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30)
+        )
+        logger.info("Coin scanner initialized")
+
+    async def close(self):
+        """Close HTTP session."""
+        if self._session:
+            await self._session.close()
+            self._session = None
+
+    async def run_daily_scan(self) -> Dict:
+        """
+        Execute full daily scan.
+
+        Returns dict with scan results:
+        {
+            'success': bool,
+            'total_symbols': int,
+            'excluded': int,
+            'filtered': int,
+            'candidates': int,
+            'watchlist': [symbols],
+            'duration_sec': float,
+            'error': str or None
+        }
+        """
+        start_time = time.time()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        result = {
+            'success': False,
+            'total_symbols': 0,
+            'excluded': 0,
+            'filtered': 0,
+            'candidates': 0,
+            'watchlist': [],
+            'duration_sec': 0,
+            'error': None
+        }
+
+        try:
+            logger.info(f"Starting daily coin scan for {today}")
+
+            # Step 1: Fetch all tickers
+            tickers = await self._fetch_all_tickers()
+            if not tickers:
+                raise Exception("Failed to fetch tickers from MEXC")
+
+            result['total_symbols'] = len(tickers)
+            logger.info(f"Fetched {len(tickers)} tickers from MEXC")
+
+            # Step 2: Filter out excluded symbols
+            tickers, excluded_count = self._apply_exclusions(tickers)
+            result['excluded'] = excluded_count
+            logger.info(f"After exclusions: {len(tickers)} symbols")
+
+            # Step 3: Store daily snapshot
+            await self._store_daily_snapshot(today, tickers)
+
+            # Step 4: Cleanup old data
+            await self._cleanup_old_data()
+
+            # Step 5: Calculate momentum and filter
+            candidates = await self._calculate_momentum(today, tickers)
+            result['filtered'] = len(tickers) - len(candidates)
+            result['candidates'] = len(candidates)
+            logger.info(f"Found {len(candidates)} candidates with >30% momentum")
+
+            # Step 6: Rank and select top N
+            top_coins = self._rank_candidates(candidates)
+            result['watchlist'] = [c.symbol for c in top_coins]
+
+            # Step 7: Update watchlist in database
+            old_watchlist = await self._get_current_watchlist()
+            await self._update_watchlist(top_coins)
+
+            # Step 8: Log the run
+            await self._log_scan_run(today, result, old_watchlist)
+
+            result['success'] = True
+            result['duration_sec'] = time.time() - start_time
+
+            logger.info(
+                f"Scan complete in {result['duration_sec']:.1f}s. "
+                f"Watchlist: {result['watchlist']}"
+            )
+
+        except Exception as e:
+            result['error'] = str(e)
+            result['duration_sec'] = time.time() - start_time
+            logger.error(f"Scan failed: {e}", exc_info=True)
+
+        return result
+
+    async def _fetch_all_tickers(self) -> List[TickerData]:
+        """Fetch all tickers from MEXC in one API call."""
+        if not self._session:
+            await self.initialize()
+
+        for attempt in range(3):
+            try:
+                async with self._session.get(self.MEXC_TICKER_URL) as resp:
+                    if resp.status == 429:
+                        # Rate limited, wait and retry
+                        wait = 2 ** attempt
+                        logger.warning(f"Rate limited, waiting {wait}s")
+                        await asyncio.sleep(wait)
+                        continue
+
+                    if resp.status != 200:
+                        logger.error(f"MEXC API error: {resp.status}")
+                        continue
+
+                    data = await resp.json()
+
+                    # Parse and filter USDT pairs only
+                    tickers = []
+                    for item in data:
+                        symbol = item.get('symbol', '')
+                        if not symbol.endswith('USDT'):
+                            continue
+
+                        try:
+                            tickers.append(TickerData(
+                                symbol=symbol,
+                                last_price=float(item.get('lastPrice', 0)),
+                                quote_volume=float(item.get('quoteVolume', 0)),
+                                price_change_pct=float(item.get('priceChangePercent', 0)),
+                                trade_count=int(item.get('count', 0))
+                            ))
+                        except (ValueError, TypeError):
+                            continue
+
+                    return tickers
+
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout fetching tickers, attempt {attempt + 1}")
+                await asyncio.sleep(2 ** attempt)
+            except Exception as e:
+                logger.error(f"Error fetching tickers: {e}")
+                await asyncio.sleep(2 ** attempt)
+
+        return []
+
+    def _apply_exclusions(
+        self,
+        tickers: List[TickerData]
+    ) -> tuple[List[TickerData], int]:
+        """Remove excluded symbols (majors, stables, blacklist)."""
+        excluded = EXCLUDED_MAJORS | EXCLUDED_STABLES | EXCLUDED_SCAMS
+
+        original_count = len(tickers)
+        filtered = [t for t in tickers if t.symbol not in excluded]
+        excluded_count = original_count - len(filtered)
+
+        return filtered, excluded_count
+
+    async def _store_daily_snapshot(
+        self,
+        date: str,
+        tickers: List[TickerData]
+    ):
+        """Store today's ticker data to database."""
+        # Get existing first_seen dates
+        existing = await self.db.fetch_all(
+            "SELECT symbol, first_seen_date FROM daily_tickers "
+            "WHERE first_seen_date IS NOT NULL GROUP BY symbol"
+        )
+        first_seen_map = {r['symbol']: r['first_seen_date'] for r in existing}
+
+        # Insert/update today's data
+        for ticker in tickers:
+            first_seen = first_seen_map.get(ticker.symbol, date)
+
+            await self.db.execute("""
+                INSERT INTO daily_tickers
+                (date, symbol, last_price, quote_volume_24h, price_change_pct_24h,
+                 trade_count_24h, first_seen_date, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(date, symbol) DO UPDATE SET
+                    last_price = excluded.last_price,
+                    quote_volume_24h = excluded.quote_volume_24h,
+                    price_change_pct_24h = excluded.price_change_pct_24h,
+                    trade_count_24h = excluded.trade_count_24h,
+                    updated_at = datetime('now')
+            """, (
+                date, ticker.symbol, ticker.last_price,
+                ticker.quote_volume, ticker.price_change_pct,
+                ticker.trade_count, first_seen
+            ))
+
+        logger.info(f"Stored {len(tickers)} ticker snapshots for {date}")
+
+    async def _cleanup_old_data(self):
+        """Remove data older than RETENTION_DAYS."""
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=self.RETENTION_DAYS)
+        ).strftime("%Y-%m-%d")
+
+        await self.db.execute(
+            "DELETE FROM daily_tickers WHERE date < ?", (cutoff,)
+        )
+
+    async def _calculate_momentum(
+        self,
+        today: str,
+        tickers: List[TickerData]
+    ) -> List[CoinCandidate]:
+        """
+        Calculate 10-day momentum for each ticker.
+        Filter by minimum momentum and volume.
+        """
+        # Get price from 10 days ago
+        lookback_date = (
+            datetime.now(timezone.utc) - timedelta(days=self.LOOKBACK_DAYS)
+        ).strftime("%Y-%m-%d")
+
+        historical = await self.db.fetch_all("""
+            SELECT symbol, last_price, first_seen_date
+            FROM daily_tickers
+            WHERE date = ?
+        """, (lookback_date,))
+
+        price_10d_ago = {r['symbol']: r['last_price'] for r in historical}
+        first_seen_dates = {r['symbol']: r['first_seen_date'] for r in historical}
+
+        # Also get first_seen for new symbols
+        all_first_seen = await self.db.fetch_all("""
+            SELECT symbol, MIN(first_seen_date) as first_seen_date
+            FROM daily_tickers
+            GROUP BY symbol
+        """)
+        for r in all_first_seen:
+            if r['symbol'] not in first_seen_dates:
+                first_seen_dates[r['symbol']] = r['first_seen_date']
+
+        candidates = []
+        today_dt = datetime.strptime(today, "%Y-%m-%d")
+
+        for ticker in tickers:
+            # Volume filter
+            if ticker.quote_volume < self.MIN_VOLUME_USDT:
+                continue
+
+            # Extreme spike filter
+            if abs(ticker.price_change_pct) > self.MAX_SPIKE_PCT:
+                continue
+
+            # Calculate momentum
+            old_price = price_10d_ago.get(ticker.symbol)
+            if old_price and old_price > 0:
+                momentum = ((ticker.last_price / old_price) - 1) * 100
+            else:
+                # New listing - use 24h change as proxy
+                momentum = ticker.price_change_pct
+
+            # Momentum filter
+            if momentum < self.MIN_MOMENTUM_PCT:
+                continue
+
+            # Check if new listing
+            first_seen = first_seen_dates.get(ticker.symbol, today)
+            try:
+                first_seen_dt = datetime.strptime(first_seen, "%Y-%m-%d")
+                days_since = (today_dt - first_seen_dt).days
+            except:
+                days_since = 0
+
+            is_new = days_since <= self.NEW_LISTING_DAYS
+
+            candidates.append(CoinCandidate(
+                symbol=ticker.symbol,
+                momentum_10d=momentum,
+                volume_24h=ticker.quote_volume,
+                price=ticker.last_price,
+                is_new_listing=is_new,
+                days_since_listing=days_since,
+                score=0  # Will be calculated in ranking
+            ))
+
+        return candidates
+
+    def _rank_candidates(
+        self,
+        candidates: List[CoinCandidate]
+    ) -> List[CoinCandidate]:
+        """
+        Rank candidates by score and return top N.
+
+        Score = momentum_10d + new_listing_bonus + volume_bonus
+        """
+        for c in candidates:
+            # Base score is momentum
+            score = c.momentum_10d
+
+            # New listing bonus
+            if c.is_new_listing:
+                score += self.NEW_LISTING_BONUS
+
+            # Volume bonus (log scale, max +10)
+            if c.volume_24h > 1_000_000:
+                score += min(10, (c.volume_24h / 1_000_000))
+
+            c.score = score
+
+        # Sort by score descending
+        candidates.sort(key=lambda x: x.score, reverse=True)
+
+        # Return top N
+        return candidates[:self.TOP_N_COINS]
+
+    async def _get_current_watchlist(self) -> List[str]:
+        """Get current watchlist from database."""
+        rows = await self.db.fetch_all(
+            "SELECT symbol FROM scanner_watchlist ORDER BY score DESC"
+        )
+        return [r['symbol'] for r in rows]
+
+    async def _update_watchlist(self, candidates: List[CoinCandidate]):
+        """Update watchlist in database."""
+        # Clear old watchlist
+        await self.db.execute("DELETE FROM scanner_watchlist")
+
+        # Insert new candidates
+        for c in candidates:
+            await self.db.execute("""
+                INSERT INTO scanner_watchlist
+                (symbol, momentum_10d, volume_24h, score, is_new_listing,
+                 days_since_listing, added_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            """, (
+                c.symbol, c.momentum_10d, c.volume_24h, c.score,
+                1 if c.is_new_listing else 0, c.days_since_listing
+            ))
+
+        logger.info(f"Updated watchlist with {len(candidates)} coins")
+
+    async def _log_scan_run(
+        self,
+        date: str,
+        result: Dict,
+        old_watchlist: List[str]
+    ):
+        """Log scan run to database."""
+        await self.db.execute("""
+            INSERT INTO scanner_runs
+            (run_date, total_symbols, excluded_count, filtered_count,
+             candidates_count, watchlist_updated, old_watchlist, new_watchlist,
+             duration_sec, error, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        """, (
+            date, result['total_symbols'], result['excluded'],
+            result['filtered'], result['candidates'],
+            1 if result['watchlist'] != old_watchlist else 0,
+            json.dumps(old_watchlist),
+            json.dumps(result['watchlist']),
+            result['duration_sec'],
+            result['error']
+        ))
+
+    async def get_watchlist(self) -> List[str]:
+        """Get current watchlist symbols for ScalperBot."""
+        if not self.db:
+            self.db = await get_database()
+
+        rows = await self.db.fetch_all(
+            "SELECT symbol FROM scanner_watchlist ORDER BY score DESC"
+        )
+
+        if rows:
+            return [r['symbol'] for r in rows]
+
+        # Fallback to config if no scanner watchlist
+        return settings.watchlist_symbols
+
+    async def add_to_blacklist(self, symbol: str, reason: str = "manual"):
+        """Add symbol to blacklist."""
+        await self.db.execute("""
+            INSERT OR REPLACE INTO scanner_blacklist (symbol, reason, added_at)
+            VALUES (?, ?, datetime('now'))
+        """, (symbol, reason))
+
+        # Also add to in-memory set
+        EXCLUDED_SCAMS.add(symbol)
+        logger.info(f"Added {symbol} to blacklist: {reason}")
+
+
+# Singleton instance
+_scanner: Optional[CoinScanner] = None
+
+
+async def get_scanner() -> CoinScanner:
+    """Get or create scanner instance."""
+    global _scanner
+    if _scanner is None:
+        _scanner = CoinScanner()
+        await _scanner.initialize()
+    return _scanner
