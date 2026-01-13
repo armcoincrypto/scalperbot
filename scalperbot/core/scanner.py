@@ -247,11 +247,16 @@ class CoinScanner:
                         usdt_count += 1
 
                         try:
+                            # MEXC returns priceChangePercent as decimal (0.05 = 5%)
+                            # Multiply by 100 to get actual percentage
+                            raw_pct = float(item.get('priceChangePercent') or 0)
+                            price_change_pct = raw_pct * 100
+
                             tickers.append(TickerData(
                                 symbol=symbol,
                                 last_price=float(item.get('lastPrice') or 0),
                                 quote_volume=float(item.get('quoteVolume') or 0),
-                                price_change_pct=float(item.get('priceChangePercent') or 0),
+                                price_change_pct=price_change_pct,
                                 trade_count=int(item.get('count') or 0)
                             ))
                         except (ValueError, TypeError) as e:
