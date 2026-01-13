@@ -249,10 +249,10 @@ class CoinScanner:
                         try:
                             tickers.append(TickerData(
                                 symbol=symbol,
-                                last_price=float(item.get('lastPrice', 0)),
-                                quote_volume=float(item.get('quoteVolume', 0)),
-                                price_change_pct=float(item.get('priceChangePercent', 0)),
-                                trade_count=int(item.get('count', 0))
+                                last_price=float(item.get('lastPrice') or 0),
+                                quote_volume=float(item.get('quoteVolume') or 0),
+                                price_change_pct=float(item.get('priceChangePercent') or 0),
+                                trade_count=int(item.get('count') or 0)
                             ))
                         except (ValueError, TypeError) as e:
                             parse_errors += 1
