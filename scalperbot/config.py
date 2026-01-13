@@ -88,8 +88,11 @@ class Settings(BaseSettings):
     scanner_enabled: bool = True           # Enable automatic daily scanning
     scanner_run_hour: int = 0              # Hour to run daily scan (UTC)
     scanner_run_minute: int = 5            # Minute to run daily scan
-    scanner_min_volume: float = 200000.0   # Min 24h volume for candidates
+    scanner_min_volume: float = 15000.0    # Min 24h volume (filter dead coins)
+    scanner_max_volume: float = 200000.0   # Max 24h volume (filter stable coins)
     scanner_min_momentum: float = 30.0     # Min 10-day momentum %
+    scanner_max_spread: float = 0.6        # Max bid-ask spread %
+    scanner_min_depth: float = 1000.0      # Min order book depth per side ($)
     scanner_top_n: int = 10                # Number of coins to add to watchlist
     scanner_use_db_watchlist: bool = True  # Use scanner watchlist instead of .env
 

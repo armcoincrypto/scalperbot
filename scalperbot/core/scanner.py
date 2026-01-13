@@ -71,6 +71,10 @@ class CoinCandidate:
     is_new_listing: bool
     days_since_listing: int
     score: float
+    spread_pct: float = 0.0      # Bid-ask spread percentage
+    bid_depth: float = 0.0       # Bid side depth in USDT
+    ask_depth: float = 0.0       # Ask side depth in USDT
+    market_quality_ok: bool = True  # Passed spread/depth check
 
 
 class CoinScanner:
@@ -86,20 +90,29 @@ class CoinScanner:
     6. Update watchlist
     """
 
-    # Configuration
+    # API endpoints
     MEXC_TICKER_URL = "https://api.mexc.com/api/v3/ticker/24hr"
-    MIN_VOLUME_USDT = 200_000  # Minimum 24h volume
-    MIN_MOMENTUM_PCT = 30.0    # Minimum 10-day gain %
-    MAX_SPIKE_PCT = 500.0      # Max 24h change (filter extreme pumps)
-    LOOKBACK_DAYS = 10         # Days to calculate momentum
-    RETENTION_DAYS = 15        # Days to keep in database
-    TOP_N_COINS = 10           # Number of coins for watchlist
-    NEW_LISTING_DAYS = 10      # Consider "new" if first seen within N days
-    NEW_LISTING_BONUS = 20.0   # Score bonus for new listings
+    MEXC_DEPTH_URL = "https://api.mexc.com/api/v3/depth"
+
+    # Fixed parameters (not configurable)
+    MAX_SPIKE_PCT = 500.0       # Max 24h change (filter extreme pumps)
+    LOOKBACK_DAYS = 10          # Days to calculate momentum
+    RETENTION_DAYS = 15         # Days to keep in database
+    NEW_LISTING_DAYS = 10       # Consider "new" if first seen within N days
+    NEW_LISTING_BONUS = 20.0    # Score bonus for new listings
+    CHECK_DEPTH_TOP_N = 50      # Check spread/depth for top N candidates
 
     def __init__(self):
         self.db = None
         self._session: Optional[aiohttp.ClientSession] = None
+
+        # Load from config (can override via .env)
+        self.MIN_VOLUME_USDT = settings.scanner_min_volume
+        self.MAX_VOLUME_USDT = settings.scanner_max_volume
+        self.MIN_MOMENTUM_PCT = settings.scanner_min_momentum
+        self.MAX_SPREAD_PCT = settings.scanner_max_spread
+        self.MIN_DEPTH_USDT = settings.scanner_min_depth
+        self.TOP_N_COINS = settings.scanner_top_n
 
     async def initialize(self):
         """Initialize database and HTTP session."""
@@ -174,7 +187,7 @@ class CoinScanner:
             logger.info(f"Found {len(candidates)} candidates with >30% momentum")
 
             # Step 6: Rank and select top N
-            top_coins = self._rank_candidates(candidates)
+            top_coins = await self._rank_candidates(candidates)
             result['watchlist'] = [c.symbol for c in top_coins]
 
             # Step 7: Update watchlist in database
@@ -345,9 +358,11 @@ class CoinScanner:
         today_dt = datetime.strptime(today, "%Y-%m-%d")
 
         for ticker in tickers:
-            # Volume filter
+            # Volume window filter (target low-mid volume "pumpy" coins)
             if ticker.quote_volume < self.MIN_VOLUME_USDT:
-                continue
+                continue  # Too dead, avoid
+            if ticker.quote_volume > self.MAX_VOLUME_USDT:
+                continue  # Too stable/efficient, skip
 
             # Extreme spike filter
             if abs(ticker.price_change_pct) > self.MAX_SPIKE_PCT:
@@ -387,15 +402,111 @@ class CoinScanner:
 
         return candidates
 
-    def _rank_candidates(
+    async def _check_market_quality(
+        self,
+        candidates: List[CoinCandidate]
+    ) -> List[CoinCandidate]:
+        """
+        Check spread and depth for top candidates.
+        This requires individual API calls, so only check top N by momentum.
+        """
+        if not candidates:
+            return []
+
+        # Pre-sort by momentum to check only the most promising
+        candidates.sort(key=lambda x: x.momentum_10d, reverse=True)
+        to_check = candidates[:self.CHECK_DEPTH_TOP_N]
+
+        logger.info(f"Checking spread/depth for top {len(to_check)} candidates")
+
+        passed = []
+        for c in to_check:
+            try:
+                spread, bid_depth, ask_depth = await self._fetch_order_book(c.symbol)
+
+                c.spread_pct = spread
+                c.bid_depth = bid_depth
+                c.ask_depth = ask_depth
+
+                # Check market quality
+                if spread > self.MAX_SPREAD_PCT:
+                    c.market_quality_ok = False
+                    logger.debug(f"{c.symbol}: spread {spread:.2f}% > max {self.MAX_SPREAD_PCT}%")
+                    continue
+
+                if bid_depth < self.MIN_DEPTH_USDT or ask_depth < self.MIN_DEPTH_USDT:
+                    c.market_quality_ok = False
+                    logger.debug(
+                        f"{c.symbol}: depth ${bid_depth:.0f}/${ask_depth:.0f} "
+                        f"< min ${self.MIN_DEPTH_USDT}"
+                    )
+                    continue
+
+                c.market_quality_ok = True
+                passed.append(c)
+
+                # Small delay to avoid rate limits
+                await asyncio.sleep(0.1)
+
+            except Exception as e:
+                logger.warning(f"Failed to check {c.symbol}: {e}")
+                # Include anyway if we can't check (fail open)
+                c.market_quality_ok = True
+                passed.append(c)
+
+        logger.info(f"{len(passed)}/{len(to_check)} passed market quality filter")
+        return passed
+
+    async def _fetch_order_book(self, symbol: str) -> tuple[float, float, float]:
+        """
+        Fetch order book and calculate spread + depth.
+        Returns: (spread_pct, bid_depth_usdt, ask_depth_usdt)
+        """
+        if not self._session:
+            await self.initialize()
+
+        url = f"{self.MEXC_DEPTH_URL}?symbol={symbol}&limit=20"
+
+        async with self._session.get(url) as resp:
+            if resp.status != 200:
+                raise Exception(f"API error: {resp.status}")
+
+            data = await resp.json()
+
+            bids = data.get('bids', [])
+            asks = data.get('asks', [])
+
+            if not bids or not asks:
+                return 999.0, 0.0, 0.0  # No liquidity
+
+            # Best bid/ask prices
+            best_bid = float(bids[0][0])
+            best_ask = float(asks[0][0])
+
+            # Calculate spread
+            mid_price = (best_bid + best_ask) / 2
+            spread_pct = ((best_ask - best_bid) / mid_price) * 100 if mid_price > 0 else 999.0
+
+            # Calculate depth (sum of top 5 levels in USDT)
+            bid_depth = sum(float(b[0]) * float(b[1]) for b in bids[:5])
+            ask_depth = sum(float(a[0]) * float(a[1]) for a in asks[:5])
+
+            return spread_pct, bid_depth, ask_depth
+
+    async def _rank_candidates(
         self,
         candidates: List[CoinCandidate]
     ) -> List[CoinCandidate]:
         """
         Rank candidates by score and return top N.
 
-        Score = momentum_10d + new_listing_bonus + volume_bonus
+        For "pumpy" low-volume coins:
+        Score = momentum_10d + new_listing_bonus + spread_bonus (lower spread = better)
+        No bonus for high volume (we want low-mid volume coins)
         """
+        # First, check market quality for top candidates
+        candidates = await self._check_market_quality(candidates)
+
         for c in candidates:
             # Base score is momentum
             score = c.momentum_10d
@@ -404,9 +515,16 @@ class CoinScanner:
             if c.is_new_listing:
                 score += self.NEW_LISTING_BONUS
 
-            # Volume bonus (log scale, max +10)
-            if c.volume_24h > 1_000_000:
-                score += min(10, (c.volume_24h / 1_000_000))
+            # Spread bonus: lower spread = higher bonus (max +15)
+            # 0.1% spread = +15, 0.6% spread = 0
+            if c.spread_pct > 0:
+                spread_bonus = max(0, (self.MAX_SPREAD_PCT - c.spread_pct) * 25)
+                score += spread_bonus
+
+            # Volume "sweet spot" bonus: prefer 50k-100k range
+            # This is the goldilocks zone for pumpy coins
+            if 50_000 <= c.volume_24h <= 100_000:
+                score += 5  # Small bonus for ideal volume range
 
             c.score = score
 
