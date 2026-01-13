@@ -219,6 +219,7 @@ class CoinScanner:
 
         for attempt in range(3):
             try:
+                logger.info(f"Fetching tickers from {self.MEXC_TICKER_URL} (attempt {attempt + 1})")
                 async with self._session.get(self.MEXC_TICKER_URL) as resp:
                     if resp.status == 429:
                         # Rate limited, wait and retry
@@ -228,10 +229,12 @@ class CoinScanner:
                         continue
 
                     if resp.status != 200:
-                        logger.error(f"MEXC API error: {resp.status}")
+                        body = await resp.text()
+                        logger.error(f"MEXC API error: status={resp.status}, body={body[:500]}")
                         continue
 
                     data = await resp.json()
+                    logger.info(f"Received {len(data)} tickers from MEXC")
 
                     # Parse and filter USDT pairs only
                     tickers = []
@@ -254,12 +257,16 @@ class CoinScanner:
                     return tickers
 
             except asyncio.TimeoutError:
-                logger.warning(f"Timeout fetching tickers, attempt {attempt + 1}")
+                logger.warning(f"Timeout fetching tickers, attempt {attempt + 1}/3")
+                await asyncio.sleep(2 ** attempt)
+            except aiohttp.ClientError as e:
+                logger.error(f"HTTP client error: {type(e).__name__}: {e}")
                 await asyncio.sleep(2 ** attempt)
             except Exception as e:
-                logger.error(f"Error fetching tickers: {e}")
+                logger.error(f"Unexpected error fetching tickers: {type(e).__name__}: {e}", exc_info=True)
                 await asyncio.sleep(2 ** attempt)
 
+        logger.error("All 3 attempts failed to fetch tickers")
         return []
 
     def _apply_exclusions(
