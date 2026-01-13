@@ -1,0 +1,22 @@
+[Unit]
+Description=ScalperBot Growth 2H Scanner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=user
+WorkingDirectory=/home/user/scalperbot
+ExecStart=/home/user/scalperbot/.venv/bin/python -m scalperbot.tools.scan_growth2h --db /home/user/scalperbot/scalperbot.db --update-watchlist --clear
+StandardOutput=journal
+StandardError=journal
+
+# Resource limits
+MemoryLimit=512M
+CPUQuota=50%
+
+# Timeout for long-running scan (15 minutes max)
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

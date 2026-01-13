@@ -1,0 +1,15 @@
+[Unit]
+Description=Run Growth 2H Scanner daily at 00:10 UTC
+
+[Timer]
+# Run daily at 00:10 UTC
+OnCalendar=*-*-* 00:10:00
+# Use UTC timezone
+Unit=scalperbot-growth2h.service
+# Randomize start time by up to 5 minutes to avoid API rate limits
+RandomizedDelaySec=300
+# Run immediately if missed (e.g., system was off)
+Persistent=true
+
+[Install]
+WantedBy=timers.target
