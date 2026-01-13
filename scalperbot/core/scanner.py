@@ -341,57 +341,93 @@ class CoinScanner:
         tickers: List[TickerData]
     ) -> List[CoinCandidate]:
         """
-        Calculate 10-day momentum for each ticker.
-        Filter by minimum momentum and volume.
+        Calculate momentum for each ticker with bootstrapping support.
+
+        Bootstrapping mode (adapts to available history):
+        - 10+ days history: Use 10-day momentum, threshold 30%
+        - 3-9 days history: Use 3-day momentum, threshold 15%
+        - 0-2 days history: Use 24h change, threshold 10%
         """
-        # Get price from 10 days ago
-        lookback_date = (
-            datetime.now(timezone.utc) - timedelta(days=self.LOOKBACK_DAYS)
-        ).strftime("%Y-%m-%d")
-
-        historical = await self.db.fetch_all("""
-            SELECT symbol, last_price, first_seen_date
+        # Determine how many days of history we have
+        history_stats = await self.db.fetch_one("""
+            SELECT COUNT(DISTINCT date) as days, MIN(date) as oldest
             FROM daily_tickers
-            WHERE date = ?
-        """, (lookback_date,))
+        """)
+        history_days = history_stats['days'] if history_stats else 0
+        oldest_date = history_stats['oldest'] if history_stats else today
 
-        price_10d_ago = {r['symbol']: r['last_price'] for r in historical}
-        first_seen_dates = {r['symbol']: r['first_seen_date'] for r in historical}
+        # Determine lookback period and threshold based on available history
+        if history_days >= 10:
+            lookback_days = 10
+            momentum_threshold = self.MIN_MOMENTUM_PCT  # 30%
+            mode = "10d"
+        elif history_days >= 3:
+            lookback_days = 3
+            momentum_threshold = 15.0  # Lower threshold for 3-day
+            mode = "3d"
+        else:
+            lookback_days = 0  # Use 24h change
+            momentum_threshold = 10.0  # Much lower for 24h
+            mode = "24h"
 
-        # Also get first_seen for new symbols
+        logger.info(f"Momentum mode: {mode} (history: {history_days} days, threshold: {momentum_threshold}%)")
+
+        # Get historical prices if we have enough history
+        price_history = {}
+        if lookback_days > 0:
+            lookback_date = (
+                datetime.now(timezone.utc) - timedelta(days=lookback_days)
+            ).strftime("%Y-%m-%d")
+
+            historical = await self.db.fetch_all("""
+                SELECT symbol, last_price
+                FROM daily_tickers
+                WHERE date = ?
+            """, (lookback_date,))
+            price_history = {r['symbol']: r['last_price'] for r in historical}
+
+        # Get first_seen dates for all symbols
         all_first_seen = await self.db.fetch_all("""
             SELECT symbol, MIN(first_seen_date) as first_seen_date
             FROM daily_tickers
             GROUP BY symbol
         """)
-        for r in all_first_seen:
-            if r['symbol'] not in first_seen_dates:
-                first_seen_dates[r['symbol']] = r['first_seen_date']
+        first_seen_dates = {r['symbol']: r['first_seen_date'] for r in all_first_seen}
 
         candidates = []
         today_dt = datetime.strptime(today, "%Y-%m-%d")
 
+        volume_filtered = 0
+        momentum_filtered = 0
+
         for ticker in tickers:
             # Volume window filter (target low-mid volume "pumpy" coins)
             if ticker.quote_volume < self.MIN_VOLUME_USDT:
+                volume_filtered += 1
                 continue  # Too dead, avoid
             if ticker.quote_volume > self.MAX_VOLUME_USDT:
+                volume_filtered += 1
                 continue  # Too stable/efficient, skip
 
             # Extreme spike filter
             if abs(ticker.price_change_pct) > self.MAX_SPIKE_PCT:
                 continue
 
-            # Calculate momentum
-            old_price = price_10d_ago.get(ticker.symbol)
-            if old_price and old_price > 0:
-                momentum = ((ticker.last_price / old_price) - 1) * 100
+            # Calculate momentum based on available history
+            if lookback_days > 0:
+                old_price = price_history.get(ticker.symbol)
+                if old_price and old_price > 0:
+                    momentum = ((ticker.last_price / old_price) - 1) * 100
+                else:
+                    # No history for this symbol, use 24h as fallback
+                    momentum = ticker.price_change_pct
             else:
-                # New listing - use 24h change as proxy
+                # Bootstrapping: use 24h change directly
                 momentum = ticker.price_change_pct
 
-            # Momentum filter
-            if momentum < self.MIN_MOMENTUM_PCT:
+            # Momentum filter (using mode-appropriate threshold)
+            if momentum < momentum_threshold:
+                momentum_filtered += 1
                 continue
 
             # Check if new listing
@@ -413,6 +449,8 @@ class CoinScanner:
                 days_since_listing=days_since,
                 score=0  # Will be calculated in ranking
             ))
+
+        logger.info(f"Filters: {volume_filtered} by volume, {momentum_filtered} by momentum (<{momentum_threshold}%)")
 
         return candidates
 
