@@ -77,6 +77,22 @@ def ensure_tables(db_path: str) -> None:
         )
         """)
 
+        # Add missing columns to scanner_watchlist (for upgrades)
+        for col, coldef in [
+            ("source", "TEXT NOT NULL DEFAULT 'growth2h'"),
+            ("spike_count_10d", "INTEGER NOT NULL DEFAULT 0"),
+            ("recent_spike_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_spike_ms", "INTEGER NOT NULL DEFAULT 0"),
+            ("quote_volume_24h", "REAL NOT NULL DEFAULT 0"),
+            ("score", "REAL NOT NULL DEFAULT 0"),
+            ("added_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+            ("updated_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+        ]:
+            try:
+                cur.execute(f"ALTER TABLE scanner_watchlist ADD COLUMN {col} {coldef}")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
         # Index for faster queries
         cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_growth2h_events_score
