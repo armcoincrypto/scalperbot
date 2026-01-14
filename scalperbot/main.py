@@ -242,8 +242,8 @@ class ScalperBot:
     async def _load_watchlist_from_db(self) -> list[str]:
         """Load watchlist symbols from scanner_watchlist table."""
         try:
-            from scalperbot.storage import get_db
-            db = await get_db()
+            from scalperbot.storage.db import get_database
+            db = await get_database()
             rows = await db.fetch_all(
                 "SELECT symbol FROM scanner_watchlist ORDER BY score DESC"
             )
