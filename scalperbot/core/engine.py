@@ -88,7 +88,9 @@ class TradingEngine:
         # Initialize or get strategy version
         await self._init_strategy_version()
 
-        self.watchlist = settings.watchlist_symbols
+        # Only set watchlist from settings if not already set (DB watchlist takes priority)
+        if not self.watchlist:
+            self.watchlist = settings.watchlist_symbols
 
         # Test API connectivity
         if await self.client.ping():
