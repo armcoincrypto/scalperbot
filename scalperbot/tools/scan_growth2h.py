@@ -61,7 +61,14 @@ def ensure_tables(db_path: str) -> None:
             except sqlite3.OperationalError:
                 pass  # Column already exists
 
-        # Scanner watchlist table (single source of truth)
+        # Scanner watchlist table - check if schema matches, recreate if not
+        # This table is refreshed daily so safe to recreate
+        cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='scanner_watchlist'")
+        row = cur.fetchone()
+        if row and 'best_growth_pct' not in row[0]:
+            # Old schema, drop and recreate
+            cur.execute("DROP TABLE scanner_watchlist")
+
         cur.execute("""
         CREATE TABLE IF NOT EXISTS scanner_watchlist (
             symbol TEXT PRIMARY KEY,
