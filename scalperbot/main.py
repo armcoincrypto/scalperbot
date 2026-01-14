@@ -65,6 +65,15 @@ class ScalperBot:
         # Initialize engine
         await self.engine.initialize()
 
+        # Load watchlist from database if enabled (Growth2H scanner populates this)
+        if settings.scanner_use_db_watchlist:
+            db_watchlist = await self._load_watchlist_from_db()
+            if db_watchlist:
+                self.engine.set_watchlist(db_watchlist)
+                logger.info(f"Loaded {len(db_watchlist)} symbols from scanner_watchlist")
+            else:
+                logger.warning("No symbols in scanner_watchlist, using .env watchlist")
+
         # Run state recovery on startup (for LIVE mode)
         if not settings.dry_run:
             await self.reconciler.initialize()
@@ -229,6 +238,20 @@ class ScalperBot:
 
         except asyncio.CancelledError:
             logger.info("Reconciler task cancelled")
+
+    async def _load_watchlist_from_db(self) -> list[str]:
+        """Load watchlist symbols from scanner_watchlist table."""
+        try:
+            from scalperbot.storage import get_db
+            db = await get_db()
+            rows = await db.fetch_all(
+                "SELECT symbol FROM scanner_watchlist ORDER BY score DESC"
+            )
+            symbols = [row['symbol'] for row in rows]
+            return symbols
+        except Exception as e:
+            logger.warning(f"Failed to load watchlist from DB: {e}")
+            return []
 
     async def _scanner_loop(self):
         """Run daily coin scanner to update momentum watchlist."""

@@ -243,17 +243,11 @@ CREATE TABLE IF NOT EXISTS daily_tickers (
     UNIQUE(date, symbol)
 );
 
--- Dynamic watchlist (scanner updates this, ScalperBot reads it)
-CREATE TABLE IF NOT EXISTS scanner_watchlist (
-    symbol TEXT PRIMARY KEY,
-    momentum_10d REAL,               -- 10-day momentum %
-    volume_24h REAL,                 -- Latest 24h volume
-    score REAL,                      -- Ranking score
-    is_new_listing INTEGER DEFAULT 0,-- First seen within 10 days
-    days_since_listing INTEGER,
-    added_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+-- Dynamic watchlist (Growth2H scanner creates this table with its own schema)
+-- Schema managed by: scalperbot/tools/scan_growth2h.py
+-- Columns: symbol, source, best_growth_pct, spike_count_10d, recent_spike_count,
+--          last_spike_ms, quote_volume_24h, score, added_at_ms, updated_at_ms
+-- DO NOT CREATE HERE - let Growth2H scanner manage it
 
 -- Blacklist (static exclusions + auto-detected dead coins)
 CREATE TABLE IF NOT EXISTS scanner_blacklist (
@@ -281,5 +275,5 @@ CREATE TABLE IF NOT EXISTS scanner_runs (
 -- Indexes for scanner tables
 CREATE INDEX IF NOT EXISTS idx_daily_tickers_date ON daily_tickers(date);
 CREATE INDEX IF NOT EXISTS idx_daily_tickers_symbol ON daily_tickers(symbol);
-CREATE INDEX IF NOT EXISTS idx_scanner_watchlist_score ON scanner_watchlist(score DESC);
+-- scanner_watchlist index created by Growth2H scanner
 """
