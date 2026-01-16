@@ -111,11 +111,24 @@ class SignalScorer:
             external_signal * self.external_weight
         )
 
+        # === Entry Confirmation Checks ===
+        # Require breakout above recent high AND volume spike
+        has_breakout = indicators.is_breakout
+        has_volume_spike = indicators.volume_spike_confirmed
+
+        if has_breakout:
+            reasons.append(f"Breakout above {indicators.recent_high:.6f}")
+        if has_volume_spike:
+            reasons.append(f"Vol spike {indicators.volume_spike_ratio:.1f}x median")
+
         # === Determine Signals ===
+        # Require confirmation for stronger entries
         is_buy = (
             total_score >= settings.buy_score_min and
             indicators.momentum_2m >= settings.buy_pct_trigger and
-            indicators.rsi < 70  # Don't buy overbought
+            indicators.rsi < 70 and  # Don't buy overbought
+            has_breakout and  # Must break above recent high
+            has_volume_spike  # Must have volume confirmation
         )
 
         is_sell = (

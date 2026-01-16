@@ -24,6 +24,11 @@ class IndicatorResult:
     last_price: float
     avg_volume: float
     is_valid: bool = True
+    # Entry confirmation filters
+    is_breakout: bool = False  # Price above recent high (5-10 min)
+    recent_high: float = 0.0  # The high we need to break
+    volume_spike_confirmed: bool = False  # Volume >= 2x median
+    volume_spike_ratio: float = 0.0  # How much above median
 
 
 class Indicators:
@@ -83,6 +88,24 @@ class Indicators:
         atr = self._calculate_atr(highs, lows, closes)
         atr_pct = (atr / last_price * 100) if last_price > 0 else 0
 
+        # Breakout confirmation: price above last 5-10 candles high
+        # Use last 7 candles (excluding current) for recent high
+        lookback = min(7, len(highs) - 1)
+        recent_high = max(highs[-(lookback + 1):-1]) if lookback > 0 else last_price
+        is_breakout = last_price > recent_high
+
+        # Volume spike confirmation: last 2 candles avg vs median of last 30
+        # Require >= 2x median for confirmation
+        if len(volumes) >= 3:
+            recent_vol = sum(volumes[-2:]) / 2  # Avg of last 2 candles
+            sorted_vols = sorted(volumes[:-2]) if len(volumes) > 2 else volumes
+            median_vol = sorted_vols[len(sorted_vols) // 2] if sorted_vols else 1
+            volume_spike_ratio = recent_vol / median_vol if median_vol > 0 else 0
+            volume_spike_confirmed = volume_spike_ratio >= 2.0
+        else:
+            volume_spike_ratio = 0
+            volume_spike_confirmed = False
+
         return IndicatorResult(
             symbol=symbol,
             momentum_2m=momentum_2m,
@@ -93,7 +116,11 @@ class Indicators:
             atr_pct=atr_pct,
             last_price=last_price,
             avg_volume=avg_volume,
-            is_valid=True
+            is_valid=True,
+            is_breakout=is_breakout,
+            recent_high=recent_high,
+            volume_spike_confirmed=volume_spike_confirmed,
+            volume_spike_ratio=volume_spike_ratio
         )
 
     def _calculate_momentum(self, closes: List[float], periods: int) -> float:
