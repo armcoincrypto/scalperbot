@@ -171,7 +171,9 @@ class MEXCClient:
         self,
         symbol: str,
         interval: str = "1m",
-        limit: int = 30
+        limit: int = 30,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None
     ) -> List[Kline]:
         """
         Get candlestick data.
@@ -180,6 +182,8 @@ class MEXCClient:
             symbol: Trading pair (e.g., "BTCUSDT")
             interval: Kline interval (1m, 5m, 15m, 1h, etc.)
             limit: Number of candles
+            start_time: Start time in milliseconds (optional)
+            end_time: End time in milliseconds (optional)
 
         Returns:
             List of Kline objects
@@ -189,6 +193,10 @@ class MEXCClient:
             "interval": interval,
             "limit": limit
         }
+        if start_time is not None:
+            params["startTime"] = start_time
+        if end_time is not None:
+            params["endTime"] = end_time
         data = await self._request("GET", "/api/v3/klines", params)
         return [Kline.from_list(k) for k in data]
 
