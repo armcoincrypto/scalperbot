@@ -96,6 +96,14 @@ class Settings(BaseSettings):
     scanner_top_n: int = 10                # Number of coins to add to watchlist
     scanner_use_db_watchlist: bool = True  # Use scanner watchlist instead of .env
 
+    # === Unified Scoring (Growth2H + Live momentum) ===
+    # unified_score = live_score + alpha * growth2h_score + beta * repeater_bonus - gamma * illiquidity_penalty
+    unified_score_alpha: float = 0.3       # Weight for growth2h historical score
+    unified_score_beta: float = 0.5        # Bonus per spike in last 10 days
+    unified_score_gamma: float = 0.2       # Penalty for illiquidity (volume < 50k)
+    unified_score_min_spikes: int = 2      # Min spikes required for repeater bonus
+    unified_score_recency_days: int = 3    # Spikes within N days get extra weight
+
     # === Logging ===
     log_level: str = "INFO"
     log_file: str = "scalperbot.log"
