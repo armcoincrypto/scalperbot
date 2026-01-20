@@ -69,6 +69,16 @@ class TradingEngine:
         self.on_trade_close = None
         self.on_signal = None
 
+        # Signal quality counters (for diagnostics)
+        self._signal_counters = {
+            "cycles": 0,
+            "signals_total": 0,  # Score >= threshold
+            "candidates_passed": 0,  # All filters passed
+            "entries_taken": 0,
+            "rejections": {}  # Histogram of rejection reasons
+        }
+        self._last_counter_log = datetime.now(timezone.utc)
+
     async def initialize(self):
         """Initialize database and connections."""
         from scalperbot.storage.db import get_database
@@ -183,6 +193,7 @@ class TradingEngine:
     async def _run_cycle(self):
         """Run one trading cycle."""
         logger.debug(f"Running cycle for {len(self.watchlist)} symbols")
+        self._signal_counters["cycles"] += 1
 
         # Clean up expired cooldowns
         await self.cooldowns.clear_expired()
@@ -207,6 +218,7 @@ class TradingEngine:
             candidate = await self._analyze_symbol(symbol, open_count)
             if candidate:
                 candidates.append(candidate)
+                self._signal_counters["candidates_passed"] += 1
 
         # Select best candidate
         slots_available = settings.max_open_positions - open_count
@@ -215,6 +227,47 @@ class TradingEngine:
         # Execute selected trades
         for candidate in selected:
             await self._execute_entry(candidate)
+            self._signal_counters["entries_taken"] += 1
+
+        # Log counter summary every 15 minutes
+        now = datetime.now(timezone.utc)
+        if (now - self._last_counter_log).total_seconds() >= 900:
+            self._log_signal_counters()
+            self._last_counter_log = now
+
+    def _log_signal_counters(self):
+        """Log signal quality counters for diagnostics."""
+        c = self._signal_counters
+        cycles = c["cycles"]
+        if cycles == 0:
+            return
+
+        # Calculate rates
+        signals_per_cycle = c["signals_total"] / cycles
+        candidates_per_cycle = c["candidates_passed"] / cycles
+        entries_per_cycle = c["entries_taken"] / cycles
+
+        # Top rejection reasons
+        rejections = c["rejections"]
+        top_rejections = sorted(rejections.items(), key=lambda x: -x[1])[:5]
+        rejection_str = ", ".join(f"{k}:{v}" for k, v in top_rejections)
+
+        logger.info(
+            f"[SIGNAL QUALITY] cycles={cycles} | "
+            f"signals={c['signals_total']} ({signals_per_cycle:.1f}/cycle) | "
+            f"candidates={c['candidates_passed']} ({candidates_per_cycle:.2f}/cycle) | "
+            f"entries={c['entries_taken']} | "
+            f"rejections: {rejection_str or 'none'}"
+        )
+
+        # Reset counters
+        self._signal_counters = {
+            "cycles": 0,
+            "signals_total": 0,
+            "candidates_passed": 0,
+            "entries_taken": 0,
+            "rejections": {}
+        }
 
     async def _analyze_symbol(
         self,
@@ -269,15 +322,28 @@ class TradingEngine:
 
             # Determine decision
             is_signal = score.total_score >= 1.0 or score.total_score <= -1.0
+
+            # Track signals for diagnostics
+            if is_signal and score.total_score >= settings.buy_score_min:
+                self._signal_counters["signals_total"] += 1
+
+                # Track rejection reasons
+                if score.rejection_reason:
+                    for reason in score.rejection_reason.split(","):
+                        reason = reason.strip()
+                        if reason:
+                            self._signal_counters["rejections"][reason] = \
+                                self._signal_counters["rejections"].get(reason, 0) + 1
+
             if not filter_result.passed:
                 decision = "FILTERED"
                 decision_reason = filter_result.rejection_reason
             elif not score.is_buy_signal:
                 decision = "NO_SIGNAL"
-                decision_reason = f"Score {score.total_score:.2f} below threshold"
+                decision_reason = f"Score {score.total_score:.2f} | reject: {score.rejection_reason}"
             else:
                 decision = "CANDIDATE"
-                decision_reason = f"Score {score.total_score:.2f}"
+                decision_reason = f"Score {score.total_score:.2f} | filters: {score.passed_filters}/5"
 
             # Log tick for research/analytics
             tick_id = await self._log_tick(

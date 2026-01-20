@@ -25,6 +25,9 @@ class SignalScore:
     is_buy_signal: bool
     is_sell_signal: bool
     reasons: list
+    # NEW: Rejection reasons for diagnostics
+    rejection_reason: str = ""
+    passed_filters: int = 0  # Count of filters passed (max 5)
 
 
 class SignalScorer:
@@ -111,25 +114,71 @@ class SignalScorer:
             external_signal * self.external_weight
         )
 
-        # === Entry Confirmation Checks ===
-        # Require breakout above recent high AND volume spike
-        has_breakout = indicators.is_breakout
+        # === Entry Confirmation Checks (ENHANCED) ===
+        # Track filter passes for diagnostics
+        passed_filters = 0
+        rejection_reason = ""
+
+        # Filter 1: Close-confirmed breakout (not just wick)
+        has_close_breakout = indicators.is_close_confirmed_breakout
+        if has_close_breakout:
+            passed_filters += 1
+            reasons.append(f"Close breakout above {indicators.recent_high:.6f}")
+
+        # Filter 2: Volume spike must persist for 2 candles
         has_volume_spike = indicators.volume_spike_confirmed
-
-        if has_breakout:
-            reasons.append(f"Breakout above {indicators.recent_high:.6f}")
         if has_volume_spike:
-            reasons.append(f"Vol spike {indicators.volume_spike_ratio:.1f}x median")
+            passed_filters += 1
+            reasons.append(f"Vol spike {indicators.volume_spike_ratio:.1f}x (sustained)")
 
-        # === Determine Signals ===
-        # Require confirmation for stronger entries
+        # Filter 3: Not a late entry (didn't already move too much)
+        is_not_late = not indicators.is_late_entry
+        if is_not_late:
+            passed_filters += 1
+        else:
+            reasons.append(f"Late entry ({indicators.late_move_pct:.1f}% in 10m)")
+
+        # Filter 4: Trend filter (price above EMA)
+        has_trend = indicators.is_trend_up
+        if has_trend:
+            passed_filters += 1
+            reasons.append("Above EMA10")
+
+        # Filter 5: Sustained momentum (both 2m and 5m positive)
+        has_sustained_momentum = indicators.momentum_sustained
+        if has_sustained_momentum:
+            passed_filters += 1
+            reasons.append("Sustained momentum")
+
+        # === Determine Signals (STRICT) ===
+        # Require ALL filters to pass for a buy signal
         is_buy = (
             total_score >= settings.buy_score_min and
             indicators.momentum_2m >= settings.buy_pct_trigger and
             indicators.rsi < 70 and  # Don't buy overbought
-            has_breakout and  # Must break above recent high
-            has_volume_spike  # Must have volume confirmation
+            has_close_breakout and  # Close-confirmed breakout
+            has_volume_spike and  # Volume spike persists
+            is_not_late and  # Not entering too late
+            has_trend and  # Price above EMA (trend up)
+            has_sustained_momentum  # Both 2m and 5m momentum positive
         )
+
+        # Build rejection reason if not a buy
+        if not is_buy and total_score >= settings.buy_score_min:
+            rejections = []
+            if not has_close_breakout:
+                rejections.append("no_close_breakout")
+            if not has_volume_spike:
+                rejections.append("no_vol_spike")
+            if not is_not_late:
+                rejections.append("late_entry")
+            if not has_trend:
+                rejections.append("no_trend")
+            if not has_sustained_momentum:
+                rejections.append("weak_momentum")
+            if indicators.rsi >= 70:
+                rejections.append("overbought")
+            rejection_reason = ",".join(rejections)
 
         is_sell = (
             total_score <= settings.sell_score_max or
@@ -145,7 +194,9 @@ class SignalScorer:
             external_signal=external_signal,
             is_buy_signal=is_buy,
             is_sell_signal=is_sell,
-            reasons=reasons
+            reasons=reasons,
+            rejection_reason=rejection_reason,
+            passed_filters=passed_filters
         )
 
     def should_exit(

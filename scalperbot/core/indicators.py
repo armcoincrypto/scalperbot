@@ -29,6 +29,13 @@ class IndicatorResult:
     recent_high: float = 0.0  # The high we need to break
     volume_spike_confirmed: bool = False  # Volume >= 2x median
     volume_spike_ratio: float = 0.0  # How much above median
+    # NEW: Enhanced filters for signal quality
+    is_close_confirmed_breakout: bool = False  # Close (not wick) above recent high
+    is_late_entry: bool = False  # Already moved too much in last 10-15 min
+    late_move_pct: float = 0.0  # How much it moved in last N candles
+    is_trend_up: bool = False  # Price above short EMA (trend filter)
+    ema_10: float = 0.0  # 10-period EMA for trend
+    momentum_sustained: bool = False  # Both 2m and 5m momentum positive
 
 
 class Indicators:
@@ -94,6 +101,15 @@ class Indicators:
         recent_high = max(highs[-(lookback + 1):-1]) if lookback > 0 else last_price
         is_breakout = last_price > recent_high
 
+        # NEW: Close-confirmed breakout (not just wick)
+        # Check if current candle CLOSED above recent high AND is green (close > open)
+        current_candle = klines[-1]
+        is_green_candle = current_candle.close > current_candle.open
+        is_close_confirmed_breakout = (
+            current_candle.close > recent_high and
+            is_green_candle
+        )
+
         # Volume spike confirmation: last 2 candles avg vs median of last 30
         # Require >= 2x median for confirmation
         if len(volumes) >= 3:
@@ -101,10 +117,35 @@ class Indicators:
             sorted_vols = sorted(volumes[:-2]) if len(volumes) > 2 else volumes
             median_vol = sorted_vols[len(sorted_vols) // 2] if sorted_vols else 1
             volume_spike_ratio = recent_vol / median_vol if median_vol > 0 else 0
-            volume_spike_confirmed = volume_spike_ratio >= 2.0
+            # Require BOTH last candles to have elevated volume (persistence)
+            vol_candle_1 = volumes[-1] / median_vol if median_vol > 0 else 0
+            vol_candle_2 = volumes[-2] / median_vol if median_vol > 0 else 0
+            volume_spike_confirmed = (
+                volume_spike_ratio >= 2.0 and
+                vol_candle_1 >= 1.5 and  # Both candles must be elevated
+                vol_candle_2 >= 1.5
+            )
         else:
             volume_spike_ratio = 0
             volume_spike_confirmed = False
+
+        # NEW: Late entry filter - reject if already moved too much in last 10-15 min
+        # Calculate move in last 10 candles (10 minutes on 1m timeframe)
+        late_lookback = min(10, len(closes) - 1)
+        if late_lookback > 0:
+            late_move_pct = ((closes[-1] - closes[-(late_lookback + 1)]) /
+                            closes[-(late_lookback + 1)]) * 100
+        else:
+            late_move_pct = 0
+        # Consider "late" if already moved more than 3% in last 10 min
+        is_late_entry = late_move_pct > 3.0
+
+        # NEW: Trend filter - price above 10-period EMA
+        ema_10 = self.get_ema(closes, 10)
+        is_trend_up = last_price > ema_10
+
+        # NEW: Sustained momentum - both 2m AND 5m must be positive
+        momentum_sustained = momentum_2m > 0.3 and momentum_5m > 0.3
 
         return IndicatorResult(
             symbol=symbol,
@@ -120,7 +161,14 @@ class Indicators:
             is_breakout=is_breakout,
             recent_high=recent_high,
             volume_spike_confirmed=volume_spike_confirmed,
-            volume_spike_ratio=volume_spike_ratio
+            volume_spike_ratio=volume_spike_ratio,
+            # NEW fields
+            is_close_confirmed_breakout=is_close_confirmed_breakout,
+            is_late_entry=is_late_entry,
+            late_move_pct=late_move_pct,
+            is_trend_up=is_trend_up,
+            ema_10=ema_10,
+            momentum_sustained=momentum_sustained
         )
 
     def _calculate_momentum(self, closes: List[float], periods: int) -> float:
