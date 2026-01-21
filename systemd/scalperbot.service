@@ -1,0 +1,22 @@
+[Unit]
+Description=ScalperBot Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/user/scalperbot
+EnvironmentFile=/home/user/scalperbot/.env
+ExecStart=/home/user/scalperbot/venv/bin/python -m scalperbot.main --auto-start --no-telegram
+Restart=always
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
