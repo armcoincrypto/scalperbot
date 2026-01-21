@@ -27,7 +27,7 @@ class IndicatorResult:
     # Entry confirmation filters
     is_breakout: bool = False  # Price above recent high (5-10 min)
     recent_high: float = 0.0  # The high we need to break
-    volume_spike_confirmed: bool = False  # Volume >= 2x median
+    volume_spike_confirmed: bool = False  # Volume >= 1.7x median
     volume_spike_ratio: float = 0.0  # How much above median
     # NEW: Enhanced filters for signal quality
     is_close_confirmed_breakout: bool = False  # Close (not wick) above recent high
@@ -111,7 +111,7 @@ class Indicators:
         )
 
         # Volume spike confirmation: last 2 candles avg vs median of last 30
-        # Require >= 2x median for confirmation
+        # Require >= 1.7x median for confirmation
         if len(volumes) >= 3:
             recent_vol = sum(volumes[-2:]) / 2  # Avg of last 2 candles
             sorted_vols = sorted(volumes[:-2]) if len(volumes) > 2 else volumes
@@ -121,7 +121,7 @@ class Indicators:
             vol_candle_1 = volumes[-1] / median_vol if median_vol > 0 else 0
             vol_candle_2 = volumes[-2] / median_vol if median_vol > 0 else 0
             volume_spike_confirmed = (
-                volume_spike_ratio >= 2.0 and
+                volume_spike_ratio >= 1.7 and
                 vol_candle_1 >= 1.5 and  # Both candles must be elevated
                 vol_candle_2 >= 1.5
             )
